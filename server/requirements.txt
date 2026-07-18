@@ -6,3 +6,8 @@ pydantic-settings==2.7.1
 httpx==0.28.1
 tencentcloud-sdk-python>=3.0.1200,<4
 openai>=1.58.1,<2
+alembic==1.16.5
+psycopg[binary]==3.2.13
+redis==7.0.1
+PyJWT==2.13.0
+cos-python-sdk-v5==1.9.44

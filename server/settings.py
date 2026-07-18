@@ -58,3 +58,25 @@ def get_ai_report_settings() -> AiReportSettings:
         base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").strip(),
         model=os.getenv("DASHSCOPE_MODEL", "qwen3.5-plus-2026-02-15").strip(),
     )
+
+
+@dataclass(frozen=True)
+class DatabaseSettings:
+    environment: str
+    url: str
+    pool_size: int
+    max_overflow: int
+
+
+def get_database_settings() -> DatabaseSettings:
+    environment = os.getenv("GANWANLE_ENV", "development").strip().lower()
+    default = f"sqlite:///{(Path(__file__).resolve().parent / 'data' / 'ganwanle.db').as_posix()}"
+    url = os.getenv("DATABASE_URL", default).strip()
+    if environment == "production" and not url.startswith("postgresql+psycopg://"):
+        raise RuntimeError("Production requires PostgreSQL")
+    return DatabaseSettings(
+        environment,
+        url,
+        int(os.getenv("DATABASE_POOL_SIZE", "5")),
+        int(os.getenv("DATABASE_MAX_OVERFLOW", "5")),
+    )

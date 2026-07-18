@@ -7,12 +7,11 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .database import Base, UPLOAD_DIR, engine, get_db
-from .migrations import migrate
+from .database import UPLOAD_DIR, get_db
 from .models import ServiceOrder, ServiceOrderPhoto
 from .services.report_generator import ReportGenerationError, generate_service_report
 from .services.speech_to_text import SpeechToTextError, transcribe_audio
@@ -38,8 +37,6 @@ AUDIO_TYPES = {
     "audio/ogg": ".ogg", "application/octet-stream": ".mp3",
 }
 
-Base.metadata.create_all(bind=engine)
-migrate(engine)
 app = FastAPI(title="干完了本地开发 API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -52,7 +49,11 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.get("/api/health")
-def health():
+def health(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        raise HTTPException(status_code=503, detail="service unavailable") from None
     return {"status": "ok"}
 
 
