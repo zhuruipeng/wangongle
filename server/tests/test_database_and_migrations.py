@@ -1,5 +1,6 @@
 from alembic import command
 from alembic.config import Config
+import pytest
 from sqlalchemy import create_engine, inspect
 
 
@@ -13,6 +14,36 @@ def test_production_rejects_sqlite(monkeypatch) -> None:
         assert "PostgreSQL" in str(error)
     else:
         raise AssertionError("production must reject SQLite")
+
+
+def test_production_rejects_remote_postgresql_without_echoing_url(monkeypatch) -> None:
+    url = "postgresql+psycopg://service:should-not-be-echoed@db.example.com/ganwanle"
+    monkeypatch.setenv("GANWANLE_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", url)
+    from server.settings import get_database_settings
+
+    with pytest.raises(RuntimeError) as error:
+        get_database_settings()
+
+    assert str(error.value) == "Production requires a loopback PostgreSQL database"
+    assert url not in str(error.value)
+    assert "should-not-be-echoed" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql+psycopg://service:password@127.0.0.1/ganwanle",
+        "postgresql+psycopg://service:password@localhost/ganwanle",
+        "postgresql+psycopg://service:password@[::1]/ganwanle",
+    ],
+)
+def test_production_accepts_loopback_psycopg_urls(monkeypatch, url: str) -> None:
+    monkeypatch.setenv("GANWANLE_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", url)
+    from server.settings import get_database_settings
+
+    assert get_database_settings().url == url
 
 
 def test_alembic_upgrades_empty_database(tmp_path, monkeypatch) -> None:

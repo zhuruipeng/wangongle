@@ -1,8 +1,11 @@
 from dataclasses import dataclass
+from ipaddress import ip_address
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -10,6 +13,7 @@ ASR_HOTWORDS = ",".join([
     "空调|10", "铜管|10", "支架|8", "抽真空|10", "室外机|8", "内机|8",
     "制冷|8", "排水管|8", "加氟|10", "压缩机|8", "安装费|8", "材料费|8",
 ])
+PRODUCTION_DATABASE_ERROR = "Production requires a loopback PostgreSQL database"
 
 
 @dataclass(frozen=True)
@@ -99,14 +103,29 @@ def get_database_settings() -> DatabaseSettings:
     environment = os.getenv("GANWANLE_ENV", "development").strip().lower()
     default = f"sqlite:///{(Path(__file__).resolve().parent / 'data' / 'ganwanle.db').as_posix()}"
     url = os.getenv("DATABASE_URL", default).strip()
-    if environment == "production" and not url.startswith("postgresql+psycopg://"):
-        raise RuntimeError("Production requires PostgreSQL")
+    if environment == "production" and not _is_loopback_postgresql_url(url):
+        raise RuntimeError(PRODUCTION_DATABASE_ERROR)
     return DatabaseSettings(
         environment,
         url,
         int(os.getenv("DATABASE_POOL_SIZE", "5")),
         int(os.getenv("DATABASE_MAX_OVERFLOW", "5")),
     )
+
+
+def _is_loopback_postgresql_url(url: str) -> bool:
+    try:
+        database_url = make_url(url)
+    except ArgumentError:
+        return False
+    if database_url.drivername != "postgresql+psycopg" or not database_url.host:
+        return False
+    if database_url.host.casefold() == "localhost":
+        return True
+    try:
+        return ip_address(database_url.host).is_loopback
+    except ValueError:
+        return False
 
 
 def get_auth_settings() -> AuthSettings:
