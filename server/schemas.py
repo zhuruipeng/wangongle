@@ -160,6 +160,17 @@ class TranscriptionResponse(BaseModel):
     error: Optional[str] = None
 
 
+class AcceptanceMetadata(BaseModel):
+    id: str
+    accepted_at: datetime
+    signature_url: str
+
+
+class AcceptanceResponse(BaseModel):
+    status: Literal["accepted"]
+    acceptance: AcceptanceMetadata
+
+
 class WeChatLoginRequest(BaseModel):
     code: str = Field(min_length=1, max_length=512)
 

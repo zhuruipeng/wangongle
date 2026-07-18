@@ -1,5 +1,6 @@
 from alembic import command
 from alembic.config import Config
+from io import StringIO
 import pytest
 from sqlalchemy import create_engine, inspect
 
@@ -69,3 +70,10 @@ def test_alembic_upgrades_empty_database(tmp_path, monkeypatch) -> None:
     index_names = {index["name"] for index in inspector.get_indexes("storage_cleanup_jobs")}
     assert ("object_key",) in unique_columns
     assert "ix_storage_cleanup_jobs_object_key" not in index_names
+    order_columns = {
+        column["name"]: column for column in inspector.get_columns("service_orders")
+    }
+    assert order_columns["audio_delete_after"]["nullable"] is True
+    current_output = StringIO()
+    command.current(Config("alembic.ini", stdout=current_output))
+    assert "0003 (head)" in current_output.getvalue()

@@ -13,8 +13,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import AuditEvent, ServiceOrder, ServiceOrderPhoto, User
+from ..models import AuditEvent, CustomerAcceptance, ServiceOrder, ServiceOrderPhoto, User
 from ..schemas import (
+    AcceptanceMetadata,
+    AcceptanceResponse,
     AudioResponse,
     FeeItem,
     GenerateReportResponse,
@@ -35,6 +37,8 @@ from ..storage import LocalStorage, StorageBackend, build_object_key, get_storag
 from ..storage.cleanup import delete_or_enqueue
 
 IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
+SIGNATURE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png"}
+UPLOAD_EXTENSION_ALIASES = {"image/jpeg": {".jpg", ".jpeg"}}
 AUDIO_TYPES = {
     "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav",
     "audio/x-wav": ".wav", "audio/mp4": ".m4a", "audio/aac": ".aac",
@@ -43,6 +47,10 @@ AUDIO_TYPES = {
 
 router = APIRouter(tags=["service-orders"])
 REPORT_CLAIM_LEASE = timedelta(minutes=5)
+AUDIO_RETENTION = timedelta(days=7)
+ACCEPTANCE_URL_TTL_SECONDS = 5 * 60
+SAFE_AUDIO_TRANSITION_ERROR = "录音存储转换失败，请稍后重试"
+SAFE_AUDIO_PERSISTENCE_ERROR = "录音处理状态保存失败，请稍后重试"
 
 
 def get_order_or_404(db: Session, user_id: str, order_id: str) -> ServiceOrder:
@@ -331,7 +339,8 @@ async def read_validated_upload(
     suffix = allowed_types.get(content_type)
     original_name = Path(file.filename or "upload").name
     original_suffix = Path(original_name).suffix.lower()
-    if not suffix or (original_suffix and original_suffix not in set(allowed_types.values())):
+    valid_extensions = UPLOAD_EXTENSION_ALIASES.get(content_type, {suffix} if suffix else set())
+    if not suffix or (original_suffix and original_suffix not in valid_extensions):
         raise HTTPException(status_code=415, detail="不支持的文件格式")
     buffer = BytesIO()
     digest = sha256()
@@ -442,6 +451,7 @@ async def upload_audio(
     order.transcription_error = None
     order.asr_request_id = None
     order.audio_duration_ms = None
+    order.audio_delete_after = None
     try:
         add_audit(db, request, current_user, order.id, "audio_uploaded", "succeeded")
         db.commit()
@@ -474,10 +484,12 @@ def transcribe_order_audio(
         add_audit(db, request, current_user, order.id, "transcription", "failed")
         db.commit()
         raise HTTPException(status_code=503, detail="语音服务尚未配置")
+    source_key = order.audio_object_key
     with TemporaryDirectory(prefix="ganwanle-asr-") as temporary_directory:
-        suffix = Path(order.audio_object_key).suffix
+        suffix = Path(source_key).suffix
         audio_path = Path(temporary_directory) / f"audio{suffix}"
-        get_storage().download_to(order.audio_object_key, audio_path)
+        storage = get_storage()
+        storage.download_to(source_key, audio_path)
         order.transcription_status = "processing"
         order.transcription_error = None
         db.commit()
@@ -492,13 +504,73 @@ def transcribe_order_audio(
             add_audit(db, request, current_user, order.id, "transcription", "failed")
             db.commit()
             return TranscriptionResponse(status="failed", error=summary)
-    order.transcript = result.transcript
-    order.transcription_status = "succeeded"
-    order.transcription_error = None
-    order.asr_request_id = result.request_id
-    order.audio_duration_ms = result.audio_duration_ms
-    add_audit(db, request, current_user, order.id, "transcription", "succeeded")
-    db.commit()
+    parsed_source = parse_object_key(source_key)
+    target_key = (
+        f"{parsed_source.environment}/audio-expiring/users/{parsed_source.owner_user_id}"
+        f"/orders/{parsed_source.order_id}/{parsed_source.filename}"
+    )
+    try:
+        storage.move(source_key, target_key)
+    except Exception:
+        order.transcription_status = "failed"
+        order.transcription_error = SAFE_AUDIO_TRANSITION_ERROR
+        order.asr_request_id = None
+        order.audio_duration_ms = None
+        add_audit(
+            db,
+            request,
+            current_user,
+            order.id,
+            "storage.audio_transition",
+            "failed",
+        )
+        db.commit()
+        delete_or_enqueue(db, storage, target_key, "audio_transition_rollback")
+        raise HTTPException(status_code=503, detail=SAFE_AUDIO_TRANSITION_ERROR) from None
+    delete_after = datetime.now(timezone.utc) + AUDIO_RETENTION
+    try:
+        order.transcript = result.transcript
+        order.transcription_status = "succeeded"
+        order.transcription_error = None
+        order.asr_request_id = result.request_id
+        order.audio_duration_ms = result.audio_duration_ms
+        order.audio_object_key = target_key
+        order.audio_delete_after = delete_after
+        add_audit(db, request, current_user, order.id, "transcription", "succeeded")
+        db.commit()
+    except Exception:
+        db.rollback()
+        recovered_key = target_key
+        recovered_delete_after = delete_after
+        try:
+            storage.move(target_key, source_key)
+        except Exception:
+            pass
+        else:
+            recovered_key = source_key
+            recovered_delete_after = None
+
+        recovery_order = db.get(ServiceOrder, order.id)
+        if recovery_order is not None:
+            recovery_order.audio_object_key = recovered_key
+            recovery_order.audio_delete_after = recovered_delete_after
+            recovery_order.transcription_status = "failed"
+            recovery_order.transcription_error = SAFE_AUDIO_PERSISTENCE_ERROR
+            recovery_order.asr_request_id = None
+            recovery_order.audio_duration_ms = None
+            try:
+                add_audit(
+                    db,
+                    request,
+                    current_user,
+                    recovery_order.id,
+                    "storage.audio_transition",
+                    "failed",
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+        raise HTTPException(status_code=503, detail=SAFE_AUDIO_PERSISTENCE_ERROR) from None
     return TranscriptionResponse(
         status="succeeded",
         transcript=result.transcript,
@@ -640,3 +712,71 @@ def submit_acceptance(
     db.commit()
     db.refresh(order)
     return order_response(order)
+
+
+@router.post("/{order_id}/acceptance", response_model=AcceptanceResponse, status_code=201)
+async def accept_service_order(
+    order_id: str,
+    request: Request,
+    accepted: str = Form(...),
+    signature: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    order = get_order_or_404(db, current_user.id, order_id)
+    existing = db.scalar(
+        select(CustomerAcceptance).where(CustomerAcceptance.service_order_id == order.id)
+    )
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="服务单已经验收")
+    if order.status != "waiting_acceptance":
+        raise HTTPException(status_code=409, detail="服务单尚未进入待验收状态")
+    if accepted != "true":
+        raise HTTPException(status_code=422, detail="请确认验收结果")
+
+    upload = await read_validated_upload(signature, SIGNATURE_TYPES, 5 * 1024 * 1024)
+    storage = get_storage()
+    storage_settings = get_storage_settings()
+    object_key = build_object_key(
+        storage_settings.environment,
+        current_user.id,
+        order.id,
+        "signatures",
+        upload.suffix,
+    )
+    try:
+        storage.put(object_key, upload.stream, upload.content_type)
+    except Exception:
+        delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
+        raise HTTPException(status_code=503, detail="签名保存失败，请稍后重试") from None
+
+    acceptance = CustomerAcceptance(
+        service_order_id=order.id,
+        signature_object_key=object_key,
+        accepted_at=datetime.now(timezone.utc),
+    )
+    order.status = "accepted"
+    try:
+        db.add(acceptance)
+        add_audit(db, request, current_user, order.id, "acceptance", "succeeded")
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
+        raise HTTPException(status_code=409, detail="服务单已经验收") from None
+    except Exception:
+        db.rollback()
+        delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
+        raise
+    db.refresh(acceptance)
+    return AcceptanceResponse(
+        status="accepted",
+        acceptance=AcceptanceMetadata(
+            id=acceptance.id,
+            accepted_at=acceptance.accepted_at,
+            signature_url=storage.presigned_get_url(
+                acceptance.signature_object_key,
+                ACCEPTANCE_URL_TTL_SECONDS,
+            ),
+        ),
+    )

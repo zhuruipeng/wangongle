@@ -3,6 +3,7 @@ from typing import Optional
 from uuid import uuid4
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -10,6 +11,27 @@ from .database import Base
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class UTCDateTime(TypeDecorator):
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: Optional[datetime], dialect) -> Optional[datetime]:
+        del dialect
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("UTCDateTime requires a timezone-aware value")
+        return value.astimezone(timezone.utc)
+
+    def process_result_value(self, value: Optional[datetime], dialect) -> Optional[datetime]:
+        del dialect
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 class ServiceOrder(Base):
@@ -39,6 +61,7 @@ class ServiceOrder(Base):
     transcription_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     asr_request_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     audio_duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    audio_delete_after: Mapped[Optional[datetime]] = mapped_column(UTCDateTime(), nullable=True)
     report_generation_status: Mapped[str] = mapped_column(String(32), default="not_started")
     report_generation_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     report_model: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
