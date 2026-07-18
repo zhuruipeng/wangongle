@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 import pytest
@@ -22,12 +22,46 @@ def test_access_token_defaults_to_two_hours(monkeypatch) -> None:
     assert claims["exp"] - claims["iat"] == 120 * 60
 
 
+def access_token_missing(secret: str, missing_claim: str) -> str:
+    now = int(datetime.now(timezone.utc).timestamp())
+    claims = {
+        "sub": "user-1",
+        "iat": now,
+        "exp": now + 300,
+        "type": "access",
+    }
+    claims.pop(missing_claim)
+    return jwt.encode(claims, secret, algorithm="HS256")
+
+
+def test_decode_rejects_access_token_without_iat(monkeypatch) -> None:
+    secret = "test-secret-that-is-long-enough-for-tests"
+    monkeypatch.setenv("JWT_SECRET", secret)
+    with pytest.raises(jwt.InvalidTokenError):
+        decode_access_token(access_token_missing(secret, "iat"))
+
+
+def test_decode_rejects_access_token_without_exp(monkeypatch) -> None:
+    secret = "test-secret-that-is-long-enough-for-tests"
+    monkeypatch.setenv("JWT_SECRET", secret)
+    with pytest.raises(jwt.InvalidTokenError):
+        decode_access_token(access_token_missing(secret, "exp"))
+
+
 def test_refresh_tokens_are_random_and_stored_as_digests() -> None:
     first = generate_refresh_token()
     second = generate_refresh_token()
     assert first != second
     assert len(digest_refresh_token(first)) == 64
     assert first not in digest_refresh_token(first)
+
+
+def test_token_lifetimes_are_fixed_security_policy(monkeypatch) -> None:
+    monkeypatch.setenv("JWT_ACCESS_MINUTES", "1")
+    monkeypatch.setenv("JWT_REFRESH_DAYS", "1")
+    settings = get_auth_settings()
+    assert settings.access_minutes == 120
+    assert settings.refresh_days == 30
 
 
 @pytest.mark.parametrize(

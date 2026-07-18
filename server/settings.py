@@ -103,8 +103,6 @@ def get_auth_settings() -> AuthSettings:
         wechat_app_id=os.getenv("WECHAT_APP_ID", "").strip(),
         wechat_app_secret=os.getenv("WECHAT_APP_SECRET", "").strip(),
         jwt_secret=os.getenv("JWT_SECRET", "").strip(),
-        access_minutes=int(os.getenv("JWT_ACCESS_MINUTES", "120")),
-        refresh_days=int(os.getenv("JWT_REFRESH_DAYS", "30")),
     )
     if environment == "production":
         if not settings.wechat_app_id or not settings.wechat_app_secret:

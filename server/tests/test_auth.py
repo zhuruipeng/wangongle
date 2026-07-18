@@ -1,5 +1,7 @@
 import logging
 
+import httpx
+import pytest
 from sqlalchemy import select
 
 from server.models import AuditEvent, RefreshSession, User
@@ -223,3 +225,23 @@ def test_wechat_exchange_sanitizes_upstream_errors(monkeypatch) -> None:
         assert "sensitive-upstream-message" not in str(error)
     else:
         raise AssertionError("WeChat errors must be rejected")
+
+
+def test_wechat_exchange_http_logs_never_include_credentials(monkeypatch, caplog) -> None:
+    from server.services.wechat_auth import WeChatLoginError, exchange_code
+    from server.settings import AuthSettings
+
+    app_secret = "wechat-secret-never-log"
+    temporary_code = "wechat-code-never-log"
+    transport = httpx.MockTransport(lambda request: httpx.Response(503, request=request))
+    real_client = httpx.Client
+
+    def mock_transport_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("httpx._api.Client", mock_transport_client)
+    with caplog.at_level(logging.INFO), pytest.raises(WeChatLoginError):
+        exchange_code(temporary_code, AuthSettings("app-id", app_secret, "x" * 32))
+    assert temporary_code not in caplog.text
+    assert app_secret not in caplog.text

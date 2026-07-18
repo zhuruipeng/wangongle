@@ -1,8 +1,17 @@
+import logging
 from typing import Optional, TypedDict
 
 import httpx
 
 from ..settings import AuthSettings
+
+
+class _DropWeChatCredentialLog(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "api.weixin.qq.com/sns/jscode2session" not in record.getMessage()
+
+
+logging.getLogger("httpx").addFilter(_DropWeChatCredentialLog())
 
 
 class WeChatIdentity(TypedDict):

@@ -36,7 +36,12 @@ def create_access_token(
 
 def decode_access_token(token: str, settings: Optional[AuthSettings] = None) -> str:
     auth_settings = settings or get_auth_settings()
-    claims = jwt.decode(token, auth_settings.jwt_secret, algorithms=[ALGORITHM])
+    claims = jwt.decode(
+        token,
+        auth_settings.jwt_secret,
+        algorithms=[ALGORITHM],
+        options={"require": ["sub", "iat", "exp", "type"]},
+    )
     subject = claims.get("sub")
     if claims.get("type") != "access" or not isinstance(subject, str) or not subject:
         raise jwt.InvalidTokenError("invalid access token")
