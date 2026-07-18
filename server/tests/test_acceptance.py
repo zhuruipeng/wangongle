@@ -61,11 +61,18 @@ def crc_valid_but_undecodable_png() -> bytes:
 
 
 @pytest.fixture
-def malformed_jpeg_empty_scan(signature_jpeg: bytes) -> bytes:
+def malformed_jpeg_truncated_sos(signature_jpeg: bytes) -> bytes:
     start = signature_jpeg.index(b"\xff\xda")
     segment_length = int.from_bytes(signature_jpeg[start + 2:start + 4], "big")
     scan_data_start = start + 2 + segment_length
-    return signature_jpeg[:scan_data_start] + b"\xff\xd9"
+    return signature_jpeg[:scan_data_start - 1] + b"\xff\xd9"
+
+
+@pytest.fixture
+def jpeg_with_app_payload_containing_sos_marker(signature_jpeg: bytes) -> bytes:
+    payload = b"Exif\x00\x00opaque-marker:\xff\xda\x00\x01-not-a-real-sos"
+    app1 = b"\xff\xe1" + (len(payload) + 2).to_bytes(2, "big") + payload
+    return signature_jpeg[:2] + app1 + signature_jpeg[2:]
 
 
 @pytest.fixture
@@ -176,6 +183,25 @@ def test_acceptance_accepts_structurally_valid_png_and_jpeg(
     assert response.status_code == 201, response.text
 
 
+def test_acceptance_allows_valid_jpeg_with_sos_bytes_inside_app_payload(
+    client,
+    owner_order,
+    jpeg_with_app_payload_containing_sos_marker: bytes,
+    acceptance_storage: LocalStorage,
+) -> None:
+    del acceptance_storage
+    order_id, headers = owner_order()
+    response = post_acceptance(
+        client,
+        order_id,
+        headers,
+        jpeg_with_app_payload_containing_sos_marker,
+        filename="signature.jpg",
+        content_type="image/jpeg",
+    )
+    assert response.status_code == 201, response.text
+
+
 @pytest.mark.parametrize(
     ("filename", "content_type"),
     [
@@ -234,7 +260,7 @@ def test_acceptance_rejects_arbitrary_bytes_with_image_name_and_mime(
     ("fixture_name", "filename", "content_type"),
     [
         ("crc_valid_but_undecodable_png", "signature.png", "image/png"),
-        ("malformed_jpeg_empty_scan", "signature.jpg", "image/jpeg"),
+        ("malformed_jpeg_truncated_sos", "signature.jpg", "image/jpeg"),
     ],
 )
 def test_acceptance_rejects_structured_but_undecodable_images(
@@ -503,3 +529,35 @@ def test_acceptance_success_does_not_refresh_after_commit(
     response = post_acceptance(client, order_id, headers, signature_png)
     assert response.status_code == 201, response.text
     assert response.json()["acceptance"]["id"]
+
+
+def test_acceptance_commit_succeeds_then_raises_preserves_canonical_signature(
+    client,
+    owner_order,
+    signature_png: bytes,
+    acceptance_storage: LocalStorage,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_id, headers = owner_order()
+    original_commit = db_session.commit
+
+    def commit_then_raise() -> None:
+        original_commit()
+        raise ConnectionError("acceptance commit outcome unknown")
+
+    monkeypatch.setattr(db_session, "commit", commit_then_raise)
+    response = post_acceptance(client, order_id, headers, signature_png)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "验收状态保存失败，请稍后重试"}
+
+    monkeypatch.setattr(db_session, "commit", original_commit)
+    db_session.rollback()
+    with Session(bind=db_session.get_bind()) as verification:
+        order = verification.get(ServiceOrder, order_id)
+        acceptance = verification.query(CustomerAcceptance).filter_by(
+            service_order_id=order_id
+        ).one()
+        assert order.status == "accepted"
+        assert acceptance.signature_object_key
+        assert acceptance_storage.exists(acceptance.signature_object_key)

@@ -62,7 +62,9 @@ TRANSCRIPTION_CLAIM_LEASE = timedelta(minutes=5)
 ACCEPTANCE_URL_TTL_SECONDS = 5 * 60
 SAFE_AUDIO_TRANSITION_ERROR = "录音存储转换失败，请稍后重试"
 SAFE_AUDIO_PERSISTENCE_ERROR = "录音处理状态保存失败，请稍后重试"
+SAFE_AUDIO_PRESIGN_ERROR = "录音授权失败，请稍后重试"
 SAFE_TRANSCRIPTION_CONFLICT = "录音正在处理或已完成转写"
+SAFE_ACCEPTANCE_PERSISTENCE_ERROR = "验收状态保存失败，请稍后重试"
 
 
 def get_order_or_404(db: Session, user_id: str, order_id: str) -> ServiceOrder:
@@ -410,13 +412,6 @@ def validate_signature_content(upload: ValidatedUpload) -> None:
     content = upload.stream.getvalue()
     expected_format = {"image/png": "PNG", "image/jpeg": "JPEG"}[upload.content_type]
     try:
-        if expected_format == "JPEG":
-            scan_marker = content.index(b"\xff\xda")
-            scan_header_length = int.from_bytes(
-                content[scan_marker + 2:scan_marker + 4], "big"
-            )
-            if scan_header_length < 2 or scan_marker + 2 + scan_header_length >= len(content) - 2:
-                raise ValueError("signature JPEG has no scan data")
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(content)) as image:
@@ -528,6 +523,11 @@ async def upload_audio(
     )
     storage.put(object_key, upload.stream, upload.content_type)
     try:
+        audio_url = storage.presigned_get_url(object_key, storage_settings.presigned_seconds)
+    except Exception:
+        delete_or_enqueue(db, storage, object_key, "audio_upload_presign")
+        raise HTTPException(status_code=503, detail=SAFE_AUDIO_PRESIGN_ERROR) from None
+    try:
         replaced = db.execute(
             update(ServiceOrder)
             .where(
@@ -575,9 +575,7 @@ async def upload_audio(
         raise HTTPException(status_code=503, detail=SAFE_AUDIO_PERSISTENCE_ERROR) from None
     if old_object_key and old_object_key != object_key:
         delete_or_enqueue(db, storage, old_object_key, "audio_replacement")
-    return AudioResponse(
-        audio_url=storage.presigned_get_url(object_key, storage_settings.presigned_seconds)
-    )
+    return AudioResponse(audio_url=audio_url)
 
 
 @router.post("/{order_id}/transcribe", response_model=TranscriptionResponse)
@@ -974,13 +972,13 @@ async def accept_service_order(
             .values(status="accepted", updated_at=datetime.now(timezone.utc))
         )
         if transitioned.rowcount != 1:
-            db.rollback()
-            delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
             raise HTTPException(status_code=409, detail="服务单状态已变更")
         db.add(acceptance)
         add_audit(db, request, current_user, order.id, "acceptance", "succeeded")
-        db.commit()
+        db.flush()
     except HTTPException:
+        db.rollback()
+        delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
         raise
     except IntegrityError:
         db.rollback()
@@ -990,6 +988,20 @@ async def accept_service_order(
         db.rollback()
         delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
         raise
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
+        raise HTTPException(status_code=409, detail="服务单已经验收") from None
+    except Exception:
+        # A connection failure can happen after the transaction committed. Keep
+        # the signature because it may already be the canonical acceptance object.
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail=SAFE_ACCEPTANCE_PERSISTENCE_ERROR,
+        ) from None
     return AcceptanceResponse(
         status="accepted",
         acceptance=AcceptanceMetadata(

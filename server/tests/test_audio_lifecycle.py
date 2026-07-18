@@ -469,6 +469,37 @@ def test_audio_upload_loses_race_to_transcription_claim_and_compensates_replacem
     assert replacement_keys and not lifecycle_storage.exists(replacement_keys[0])
 
 
+def test_audio_replacement_presign_failure_compensates_before_db_commit(
+    client,
+    owner_order,
+    lifecycle_storage: TrackingStorage,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_id, headers = owner_order(audio=True)
+    source_key = db_session.get(ServiceOrder, order_id).audio_object_key
+    monkeypatch.setattr(
+        lifecycle_storage,
+        "presigned_get_url",
+        lambda key, expires: (_ for _ in ()).throw(RuntimeError("signing secret")),
+    )
+
+    response = client.post(
+        f"/api/v1/service-orders/{order_id}/audio",
+        headers=headers,
+        files={"file": ("replacement.mp3", b"ID3-replacement", "audio/mpeg")},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "录音授权失败，请稍后重试"}
+    assert "secret" not in response.text
+    db_session.expire_all()
+    persisted = db_session.get(ServiceOrder, order_id)
+    assert persisted.audio_object_key == source_key
+    assert lifecycle_storage.exists(source_key)
+    assert len(list(lifecycle_storage.root.rglob("*.mp3"))) == 1
+
+
 def test_commit_succeeds_then_raises_never_compensates_canonical_target(
     client,
     owner_order,
