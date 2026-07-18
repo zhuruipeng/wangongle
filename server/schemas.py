@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 OrderStatus = Literal["draft", "in_progress", "waiting_acceptance", "accepted", "cancelled"]
 
@@ -157,3 +157,47 @@ class TranscriptionResponse(BaseModel):
     transcript: Optional[str] = None
     audio_duration_ms: Optional[int] = None
     error: Optional[str] = None
+
+
+class WeChatLoginRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=512)
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(min_length=1, max_length=512)
+
+
+class ProfileUpdateRequest(BaseModel):
+    technician_name: str = Field(min_length=1, max_length=100)
+
+    @field_validator("technician_name", mode="before")
+    @classmethod
+    def trim_name(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        value = value.strip()
+        if not value:
+            raise ValueError("technician_name must not be blank")
+        return value
+
+
+class AuthUserResponse(BaseModel):
+    id: str
+    role: str
+    technician_name: Optional[str]
+    profile_complete: bool
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int
+    user: AuthUserResponse
+
+
+class TokenPairResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int

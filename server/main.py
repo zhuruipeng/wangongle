@@ -1,21 +1,26 @@
 import os
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .database import UPLOAD_DIR, get_db
+from .middleware import RequestIDMiddleware
 from .models import ServiceOrder, ServiceOrderPhoto
+from .routers.auth import router as auth_router
+from .services.rate_limit import create_redis_client
 from .services.report_generator import ReportGenerationError, generate_service_report
 from .services.speech_to_text import SpeechToTextError, transcribe_audio
-from .settings import get_ai_report_settings, get_asr_settings
+from .settings import get_ai_report_settings, get_asr_settings, get_auth_settings, get_redis_settings
 from .schemas import (
     AudioResponse,
     FeeItem,
@@ -37,18 +42,11 @@ AUDIO_TYPES = {
     "audio/ogg": ".ogg", "application/octet-stream": ".mp3",
 }
 
-app = FastAPI(title="干完了本地开发 API", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[origin.strip() for origin in os.getenv("GANWANLE_CORS_ORIGINS", "http://localhost:10086,http://127.0.0.1:10086").split(",") if origin.strip()],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+logger = logging.getLogger(__name__)
+api_router = APIRouter()
 
 
-@app.get("/api/health")
+@api_router.get("/api/health")
 def health(db: Session = Depends(get_db)):
     try:
         db.execute(text("SELECT 1"))
@@ -119,7 +117,7 @@ def order_response(order: ServiceOrder) -> ServiceOrderResponse:
     )
 
 
-@app.post("/api/v1/service-orders", response_model=ServiceOrderResponse, status_code=status.HTTP_201_CREATED)
+@api_router.post("/api/v1/service-orders", response_model=ServiceOrderResponse, status_code=status.HTTP_201_CREATED)
 def create_service_order(payload: ServiceOrderCreate, db: Session = Depends(get_db)):
     order = ServiceOrder(**payload.model_dump())
     db.add(order)
@@ -132,7 +130,7 @@ def create_service_order(payload: ServiceOrderCreate, db: Session = Depends(get_
     return order_response(order)
 
 
-@app.get("/api/v1/service-orders", response_model=list[ServiceOrderResponse])
+@api_router.get("/api/v1/service-orders", response_model=list[ServiceOrderResponse])
 def list_service_orders(status_filter: Optional[str] = Query(default=None, alias="status"), db: Session = Depends(get_db)):
     statement = select(ServiceOrder).order_by(ServiceOrder.created_at.desc())
     if status_filter:
@@ -143,12 +141,12 @@ def list_service_orders(status_filter: Optional[str] = Query(default=None, alias
     return [order_response(order) for order in db.scalars(statement).all()]
 
 
-@app.get("/api/v1/service-orders/{order_id}", response_model=ServiceOrderResponse)
+@api_router.get("/api/v1/service-orders/{order_id}", response_model=ServiceOrderResponse)
 def get_service_order(order_id: str, db: Session = Depends(get_db)):
     return order_response(get_order_or_404(db, order_id))
 
 
-@app.patch("/api/v1/service-orders/{order_id}", response_model=ServiceOrderResponse)
+@api_router.patch("/api/v1/service-orders/{order_id}", response_model=ServiceOrderResponse)
 def patch_service_order(order_id: str, payload: ServiceOrderPatch, db: Session = Depends(get_db)):
     order = get_order_or_404(db, order_id)
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -182,7 +180,7 @@ async def save_upload(file: UploadFile, folder: str, allowed_types: dict[str, st
     return f"/uploads/{folder}/{target.name}", original_name
 
 
-@app.post("/api/v1/service-orders/{order_id}/photos", response_model=PhotoResponse, status_code=201)
+@api_router.post("/api/v1/service-orders/{order_id}/photos", response_model=PhotoResponse, status_code=201)
 async def upload_photo(order_id: str, phase: Literal["before", "after"] = Form(...), file: UploadFile = File(...), db: Session = Depends(get_db)):
     order = get_order_or_404(db, order_id)
     file_url, original_name = await save_upload(file, "photos", IMAGE_TYPES, 10 * 1024 * 1024)
@@ -192,7 +190,7 @@ async def upload_photo(order_id: str, phase: Literal["before", "after"] = Form(.
     return photo
 
 
-@app.delete("/api/v1/service-orders/{order_id}/photos/{photo_id}", status_code=204)
+@api_router.delete("/api/v1/service-orders/{order_id}/photos/{photo_id}", status_code=204)
 def delete_photo(order_id: str, photo_id: str, db: Session = Depends(get_db)):
     get_order_or_404(db, order_id)
     photo = db.scalar(select(ServiceOrderPhoto).where(ServiceOrderPhoto.id == photo_id, ServiceOrderPhoto.service_order_id == order_id))
@@ -205,7 +203,7 @@ def delete_photo(order_id: str, photo_id: str, db: Session = Depends(get_db)):
     db.delete(photo); db.commit()
 
 
-@app.post("/api/v1/service-orders/{order_id}/audio", response_model=AudioResponse)
+@api_router.post("/api/v1/service-orders/{order_id}/audio", response_model=AudioResponse)
 async def upload_audio(order_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     order = get_order_or_404(db, order_id)
     file_url, _ = await save_upload(file, "audio", AUDIO_TYPES, 20 * 1024 * 1024)
@@ -218,7 +216,7 @@ async def upload_audio(order_id: str, file: UploadFile = File(...), db: Session 
     return AudioResponse(audio_url=file_url)
 
 
-@app.post("/api/v1/service-orders/{order_id}/transcribe", response_model=TranscriptionResponse)
+@api_router.post("/api/v1/service-orders/{order_id}/transcribe", response_model=TranscriptionResponse)
 def transcribe_order_audio(order_id: str, db: Session = Depends(get_db)):
     order = get_order_or_404(db, order_id)
     if not order.audio_url:
@@ -256,7 +254,7 @@ def transcribe_order_audio(order_id: str, db: Session = Depends(get_db)):
     )
 
 
-@app.post("/api/v1/service-orders/{order_id}/generate-report", response_model=GenerateReportResponse)
+@api_router.post("/api/v1/service-orders/{order_id}/generate-report", response_model=GenerateReportResponse)
 def generate_order_report(order_id: str, force: bool = Query(default=False), db: Session = Depends(get_db)):
     order = get_order_or_404(db, order_id)
     if not order.transcript or not order.transcript.strip():
@@ -315,7 +313,7 @@ def generate_order_report(order_id: str, force: bool = Query(default=False), db:
     )
 
 
-@app.put("/api/v1/service-orders/{order_id}/report", response_model=ServiceOrderResponse)
+@api_router.put("/api/v1/service-orders/{order_id}/report", response_model=ServiceOrderResponse)
 def save_report(order_id: str, payload: ReportPayload, db: Session = Depends(get_db)):
     order = get_order_or_404(db, order_id)
     material_total = sum(item.amount_cents or 0 for item in payload.materials)
@@ -329,9 +327,49 @@ def save_report(order_id: str, payload: ReportPayload, db: Session = Depends(get
     return order_response(order)
 
 
-@app.post("/api/v1/service-orders/{order_id}/submit-acceptance", response_model=ServiceOrderResponse)
+@api_router.post("/api/v1/service-orders/{order_id}/submit-acceptance", response_model=ServiceOrderResponse)
 def submit_acceptance(order_id: str, db: Session = Depends(get_db)):
     order = get_order_or_404(db, order_id)
     order.status = "waiting_acceptance"
     db.commit(); db.refresh(order)
     return order_response(order)
+
+
+def create_app() -> FastAPI:
+    get_auth_settings()
+    application = FastAPI(title="干完了本地开发 API", version="0.1.0")
+    application.state.redis = create_redis_client(get_redis_settings())
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            origin.strip()
+            for origin in os.getenv(
+                "GANWANLE_CORS_ORIGINS",
+                "http://localhost:10086,http://127.0.0.1:10086",
+            ).split(",")
+            if origin.strip()
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    application.add_middleware(RequestIDMiddleware)
+    application.include_router(api_router)
+    application.include_router(auth_router)
+    application.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+    @application.exception_handler(Exception)
+    async def handle_unexpected_error(request: Request, _error: Exception) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", "") or "unknown"
+        logger.error("Unhandled request error request_id=%s", request_id)
+        if os.getenv("GANWANLE_ENV", "development").strip().lower() == "production":
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "服务暂时不可用", "request_id": request_id},
+            )
+        return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+
+    return application
+
+
+app = create_app()

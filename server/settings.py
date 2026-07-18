@@ -68,6 +68,21 @@ class DatabaseSettings:
     max_overflow: int
 
 
+@dataclass(frozen=True)
+class AuthSettings:
+    wechat_app_id: str
+    wechat_app_secret: str
+    jwt_secret: str
+    access_minutes: int = 120
+    refresh_days: int = 30
+
+
+@dataclass(frozen=True)
+class RedisSettings:
+    url: str
+    key_prefix: str = "ganwanle"
+
+
 def get_database_settings() -> DatabaseSettings:
     environment = os.getenv("GANWANLE_ENV", "development").strip().lower()
     default = f"sqlite:///{(Path(__file__).resolve().parent / 'data' / 'ganwanle.db').as_posix()}"
@@ -79,4 +94,28 @@ def get_database_settings() -> DatabaseSettings:
         url,
         int(os.getenv("DATABASE_POOL_SIZE", "5")),
         int(os.getenv("DATABASE_MAX_OVERFLOW", "5")),
+    )
+
+
+def get_auth_settings() -> AuthSettings:
+    environment = os.getenv("GANWANLE_ENV", "development").strip().lower()
+    settings = AuthSettings(
+        wechat_app_id=os.getenv("WECHAT_APP_ID", "").strip(),
+        wechat_app_secret=os.getenv("WECHAT_APP_SECRET", "").strip(),
+        jwt_secret=os.getenv("JWT_SECRET", "").strip(),
+        access_minutes=int(os.getenv("JWT_ACCESS_MINUTES", "120")),
+        refresh_days=int(os.getenv("JWT_REFRESH_DAYS", "30")),
+    )
+    if environment == "production":
+        if not settings.wechat_app_id or not settings.wechat_app_secret:
+            raise RuntimeError("Production requires WeChat credentials")
+        if len(settings.jwt_secret) < 32:
+            raise RuntimeError("Production requires a JWT secret of at least 32 characters")
+    return settings
+
+
+def get_redis_settings() -> RedisSettings:
+    return RedisSettings(
+        url=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").strip(),
+        key_prefix=os.getenv("REDIS_KEY_PREFIX", "ganwanle").strip() or "ganwanle",
     )
