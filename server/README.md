@@ -43,6 +43,34 @@ AI_REPORT_ENABLED=true
 
 不要把 `DASHSCOPE_API_KEY` 写入前端环境变量、源码、日志或错误响应。本地接口没有登录和权限控制，不可直接部署到公网。
 
+## 客户验收链接与 H5
+
+本地验收链接配置放在 `server/.env`：
+
+```dotenv
+PUBLIC_H5_BASE_URL=http://127.0.0.1:10086/customer-acceptance
+ACCEPTANCE_LINK_EXPIRES_DAYS=7
+```
+
+启动 H5 开发服务：
+
+```powershell
+$env:TARO_APP_API_BASE_URL='http://127.0.0.1:8001'
+npm.cmd run dev:h5
+```
+
+H5 使用浏览器路由，客户验收入口为 `http://127.0.0.1:10086/customer-acceptance`。师傅端生成的链接会自动附带一次原始 Token；页面读取后立即从地址栏移除，并通过 `Authorization: Bearer` 调用公开接口。数据库只保存 Token 的 SHA-256 摘要。
+
+如果要在同一局域网的手机微信中测试，请同时完成以下修改：
+
+1. 将 `PUBLIC_H5_BASE_URL` 改为电脑局域网地址，例如 `http://192.168.1.20:10086/customer-acceptance`。
+2. 将 `TARO_APP_API_BASE_URL` 改为 `http://192.168.1.20:8001` 后重新启动 H5 和小程序构建。
+3. 后端使用 `--host 0.0.0.0` 启动。
+4. 将 `http://192.168.1.20:10086` 加入 `GANWANLE_CORS_ORIGINS`。
+5. 确认 Windows 防火墙允许本地测试端口 `8001` 和 `10086`。
+
+签名 PNG 保存到 `server/uploads/signatures/`，验收报告和照片快照保存在 SQLite 数据库。快照 SHA-256 仅用于检测内容是否变化，不代表司法或第三方电子存证。本地接口没有用户登录和权限控制，不得作为正式公网服务部署。
+
 SQLite 数据库位于 `server/data/ganwanle.db`，上传文件位于 `server/uploads/`。二者均已加入 `.gitignore`。
 
 ## 前端 API 地址

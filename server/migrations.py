@@ -11,6 +11,7 @@ ORDER_COLUMNS = {
     "report_generation_error": "TEXT",
     "report_model": "VARCHAR(200)",
     "report_generated_at": "DATETIME",
+    "accepted_at": "DATETIME",
 }
 
 

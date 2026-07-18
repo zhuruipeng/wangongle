@@ -1,16 +1,22 @@
 import Taro from '@tarojs/taro'
+import { useDidShow } from '@tarojs/taro'
 import { Button, Checkbox, CheckboxGroup, Input, Text, Textarea, View } from '@tarojs/components'
 import { useState } from 'react'
 import StepProgress from '../../components/StepProgress'
 import { useDelivery, type Report } from '../../context/DeliveryContext'
-import { saveOrderReport, submitOrderAcceptance, type ApiReport } from '../../services/serviceOrders'
+import { createAcceptanceLink, getServiceOrder, revokeAcceptanceLink, saveOrderReport, type AcceptanceLinkResult, type ApiReport } from '../../services/serviceOrders'
 import './index.scss'
 
 export default function ReportPage() {
-  const { serviceOrderId, report, setReport, setRemoteOrder, generatedReport, setGeneratedReport, reportConfirmed, setReportConfirmed } = useDelivery()
+  const { serviceOrderId, remoteOrder, report, setReport, setRemoteOrder, generatedReport, setGeneratedReport, reportConfirmed, setReportConfirmed } = useDelivery()
   const [saving, setSaving] = useState(false)
+  const [acceptanceLink, setAcceptanceLink] = useState<AcceptanceLinkResult | null>(null)
+  const locked = remoteOrder?.status === 'accepted'
+  useDidShow(() => {
+    if (serviceOrderId) getServiceOrder(serviceOrderId).then(setRemoteOrder).catch(() => undefined)
+  })
   const number = (value: string | undefined) => Number(value) || 0
-  const patch = (next: Partial<Report>) => { setReport({ ...report, ...next }); if (generatedReport) setReportConfirmed(false) }
+  const patch = (next: Partial<Report>) => { if (locked) return; setReport({ ...report, ...next }); if (generatedReport) setReportConfirmed(false) }
   const materialTotal = report.materials.reduce((sum, item) => sum + number(item.price), 0)
   const laborTotal = generatedReport
     ? generatedReport.labor_items.reduce((sum, item) => sum + ((item.amount_cents || 0) / 100), 0)
@@ -63,6 +69,7 @@ export default function ReportPage() {
 
   const saveDraft = async () => {
     if (saving) return
+    if (locked) return Taro.showToast({ title: '该服务单已验收，内容已锁定', icon: 'none' })
     if (!serviceOrderId) return Taro.showToast({ title: '缺少服务单，请从工作台重新开始', icon: 'none' })
     setSaving(true)
     try {
@@ -75,17 +82,64 @@ export default function ReportPage() {
     if (saving) return
     if (generatedReport && !reportConfirmed) return Taro.showToast({ title: '请先确认AI整理的材料、数量和金额', icon: 'none', duration: 3000 })
     if (!serviceOrderId) return Taro.showToast({ title: '缺少服务单，请从工作台重新开始', icon: 'none' })
+    if (locked) return Taro.showToast({ title: '该服务单已验收，内容已锁定', icon: 'none' })
     setSaving(true)
     try {
-      await saveOrderReport(serviceOrderId, apiReport())
-      const order = await submitOrderAcceptance(serviceOrderId); setRemoteOrder(order)
-      Taro.showToast({ title: '已提交客户验收', icon: 'success' })
-      await Taro.navigateTo({ url: `/pages/customer-acceptance/index?serviceOrderId=${encodeURIComponent(serviceOrderId)}` })
-    } catch (error) { Taro.showToast({ title: error instanceof Error ? error.message : '提交验收失败', icon: 'none', duration: 3000 }) }
+      const savedOrder = await saveOrderReport(serviceOrderId, apiReport())
+      const link = await createAcceptanceLink(serviceOrderId)
+      setRemoteOrder({ ...savedOrder, status: 'waiting_acceptance' })
+      setAcceptanceLink(link)
+      Taro.showToast({ title: '验收链接已生成', icon: 'success' })
+    } catch (error) { Taro.showToast({ title: error instanceof Error ? error.message : '验收链接生成失败', icon: 'none', duration: 3000 }) }
     finally { setSaving(false) }
   }
 
-  return <View className='page report-page'><StepProgress current={3} />
+  const regenerateLink = async () => {
+    if (!serviceOrderId || saving || locked) return
+    const confirmation = await Taro.showModal({ title: '重新生成验收链接', content: '重新生成后，旧链接将立即失效。是否继续？', confirmText: '重新生成' })
+    if (!confirmation.confirm) return
+    setSaving(true)
+    try {
+      const savedOrder = await saveOrderReport(serviceOrderId, apiReport())
+      const link = await createAcceptanceLink(serviceOrderId)
+      setRemoteOrder({ ...savedOrder, status: 'waiting_acceptance' })
+      setAcceptanceLink(link)
+      Taro.showToast({ title: '新链接已生成', icon: 'success' })
+    } catch (error) { Taro.showToast({ title: error instanceof Error ? error.message : '重新生成失败', icon: 'none' }) }
+    finally { setSaving(false) }
+  }
+
+  const copyLink = async () => {
+    if (!acceptanceLink) return
+    await Taro.setClipboardData({ data: acceptanceLink.url })
+  }
+
+  const previewLink = async () => {
+    if (!acceptanceLink) return
+    if (Taro.getEnv() === Taro.ENV_TYPE.WEB) {
+      window.open(acceptanceLink.url, '_blank', 'noopener,noreferrer')
+      return
+    }
+    const tokenPart = acceptanceLink.url.match(/[?&]token=([^&]+)/)?.[1]
+    if (!tokenPart) return Taro.showToast({ title: '验收链接无效', icon: 'none' })
+    await Taro.navigateTo({ url: `/pages/customer-acceptance/index?token=${encodeURIComponent(decodeURIComponent(tokenPart))}` })
+  }
+
+  const revokeLink = async () => {
+    if (!acceptanceLink || !serviceOrderId || saving) return
+    const confirmation = await Taro.showModal({ title: '撤销验收链接', content: '撤销后客户将无法继续使用当前链接。', confirmText: '确认撤销' })
+    if (!confirmation.confirm) return
+    setSaving(true)
+    try {
+      await revokeAcceptanceLink(serviceOrderId)
+      setAcceptanceLink(null)
+      Taro.showToast({ title: '链接已撤销', icon: 'success' })
+    } catch (error) { Taro.showToast({ title: error instanceof Error ? error.message : '撤销失败', icon: 'none' }) }
+    finally { setSaving(false) }
+  }
+
+  return <View className={`page report-page ${locked ? 'locked' : ''}`}><StepProgress current={3} />
+    {locked && <View className='locked-panel'>该服务单已验收，内容已锁定</View>}
     <View className='ai-warning'>⚠ {generatedReport ? 'AI已根据语音整理，请确认材料、数量和金额。' : 'AI内容仅供整理，请师傅确认材料和金额。'}</View>
     {generatedReport?.summary && <View className='report-card card'><Text className='section-title'>服务概述</Text><Text>{generatedReport.summary}</Text></View>}
     {!!generatedReport?.missing_information.length && <View className='missing-card'><Text className='section-title'>需要补充的信息</Text>{generatedReport.missing_information.map((item, index) => <Text key={index}>• {item}</Text>)}</View>}
@@ -112,9 +166,15 @@ export default function ReportPage() {
     <View className='report-card card risk'><Text className='section-title'>4. 风险和异常</Text>{report.risks.map((value, index) => <View key={index}><Textarea className='text-area risk-input' value={value} onInput={event => updateList('risks', index, event.detail.value)} />{generatedReport?.risks[index]?.source_text && <Text className='source-text'>原话：{generatedReport.risks[index].source_text}</Text>}</View>)}<Button className='add-item' onClick={addRisk}>+ 添加风险或异常</Button></View>
     <View className='report-card card'><Text className='section-title'>5. 售后提醒</Text><Textarea className='text-area compact' value={report.afterSales} onInput={event => patch({ afterSales: event.detail.value })} />{generatedReport?.after_sales.map((item, index) => <Text className='source-text' key={index}>原话：{item.source_text}</Text>)}</View>
 
-    {generatedReport && <View className='report-card card confirmation-card'><CheckboxGroup onChange={event => setReportConfirmed(event.detail.value.includes('confirmed'))}><View className='confirm-check'><Checkbox value='confirmed' checked={reportConfirmed} color='#173b65' /><Text>我已核对AI整理的材料、数量、单价和费用。</Text></View></CheckboxGroup></View>}
-    <View className='fixed-actions'><Button className='secondary-btn' loading={saving} disabled={saving} onClick={saveDraft}>保存草稿</Button><Button className='primary-btn' disabled={saving || Boolean(generatedReport && !reportConfirmed)} onClick={sendAcceptance}>发给客户验收</Button></View>
+    {generatedReport && <View className='report-card card confirmation-card'><CheckboxGroup onChange={event => !locked && setReportConfirmed(event.detail.value.includes('confirmed'))}><View className='confirm-check'><Checkbox value='confirmed' checked={reportConfirmed} disabled={locked} color='#173b65' /><Text>我已核对AI整理的材料、数量、单价和费用。</Text></View></CheckboxGroup></View>}
+    {acceptanceLink && <View className='report-card card acceptance-link-card'><Text className='section-title'>客户验收链接</Text><Text className='acceptance-url'>{acceptanceLink.url}</Text><Text className='link-expiry'>有效期至：{formatLinkTime(acceptanceLink.expires_at)}</Text><Text className='link-warning'>重新生成后旧链接会立即失效。</Text><View className='link-actions'><Button onClick={copyLink}>复制链接</Button><Button onClick={previewLink}>预览客户页面</Button><Button onClick={regenerateLink}>重新生成链接</Button><Button className='danger-link' onClick={revokeLink}>撤销链接</Button></View></View>}
+    <View className='fixed-actions'><Button className='secondary-btn' loading={saving} disabled={saving || locked} onClick={saveDraft}>保存草稿</Button><Button className='primary-btn' disabled={saving || locked || Boolean(generatedReport && !reportConfirmed)} onClick={acceptanceLink ? regenerateLink : sendAcceptance}>{acceptanceLink ? '生成新的验收链接' : '发给客户验收'}</Button></View>
   </View>
+}
+
+function formatLinkTime(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
 }
 
 function Fee({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {

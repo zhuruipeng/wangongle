@@ -142,6 +142,7 @@ class ServiceOrderResponse(BaseModel):
     report_generation_error: str | None
     report_model: str | None
     report_generated_at: datetime | None
+    accepted_at: datetime | None
     before_photos: list[PhotoResponse]
     after_photos: list[PhotoResponse]
     created_at: datetime
@@ -157,3 +158,41 @@ class TranscriptionResponse(BaseModel):
     transcript: str | None = None
     audio_duration_ms: int | None = None
     error: str | None = None
+
+
+class AcceptanceLinkResponse(BaseModel):
+    url: str
+    expires_at: datetime
+
+
+class AcceptanceLinkRevokeResponse(BaseModel):
+    status: Literal["revoked"]
+
+
+class PublicAcceptancePhoto(BaseModel):
+    phase: Literal["before", "after"]
+    file_url: str
+    sort_order: int
+
+
+class PublicAcceptanceResponse(BaseModel):
+    company_name: str
+    order_no: str
+    customer_name: str
+    service_type: str
+    service_address: str
+    technician_name: str
+    completed_at: datetime
+    before_photos: list[PublicAcceptancePhoto]
+    after_photos: list[PublicAcceptancePhoto]
+    completed_items: list[str]
+    materials: list[MaterialItem]
+    fee_items: list[FeeItem]
+    total_amount_cents: int
+    paid_amount_cents: int
+    due_amount_cents: int
+    risks: list[str]
+    after_sales_reminder: str
+    acceptance_statement: str
+    status: Literal["waiting_acceptance", "accepted"]
+    accepted_at: datetime | None

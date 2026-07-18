@@ -1,6 +1,6 @@
 import Taro from '@tarojs/taro'
 import { Button, Canvas, Text, View } from '@tarojs/components'
-import { useRef } from 'react'
+import { forwardRef, useImperativeHandle, useRef } from 'react'
 import './index.scss'
 
 type Point = { x: number; y: number }
@@ -10,13 +10,19 @@ type SignaturePadProps = {
   onSignedChange: (signed: boolean) => void
 }
 
-export default function SignaturePad({ disabled, signed, onSignedChange }: SignaturePadProps) {
+export type SignaturePadHandle = {
+  exportPng: () => Promise<string>
+}
+
+const CANVAS_ID = 'customerSignature'
+
+const SignaturePad = forwardRef<SignaturePadHandle, SignaturePadProps>(function SignaturePad({ disabled, signed, onSignedChange }, ref) {
   const context = useRef<Taro.CanvasContext | null>(null)
   const drawing = useRef(false)
 
   const getContext = () => {
     if (!context.current) {
-      context.current = Taro.createCanvasContext('customerSignature')
+      context.current = Taro.createCanvasContext(CANVAS_ID)
       context.current.setStrokeStyle('#173b65')
       context.current.setLineWidth(4)
       context.current.setLineCap('round')
@@ -60,13 +66,22 @@ export default function SignaturePad({ disabled, signed, onSignedChange }: Signa
     onSignedChange(false)
   }
 
+  useImperativeHandle(ref, () => ({
+    exportPng: async () => {
+      if (!signed) throw new Error('请先完成手写签名')
+      const result = await Taro.canvasToTempFilePath({ canvasId: CANVAS_ID, fileType: 'png', quality: 1 })
+      if (!result.tempFilePath) throw new Error('签名导出失败，请重新签名')
+      return result.tempFilePath
+    }
+  }), [signed])
+
   return <View className='signature-wrap'>
     <View className={`signature-canvas-wrap ${disabled ? 'disabled' : ''}`}>
       {!signed && <Text className='signature-placeholder'>请在此处签名</Text>}
       <Canvas
         className='signature-canvas'
-        canvasId='customerSignature'
-        id='customerSignature'
+        canvasId={CANVAS_ID}
+        id={CANVAS_ID}
         disableScroll
         onTouchStart={start}
         onTouchMove={move}
@@ -76,4 +91,6 @@ export default function SignaturePad({ disabled, signed, onSignedChange }: Signa
     </View>
     {!disabled && <Button className='clear-signature' onClick={clear}>清除重签</Button>}
   </View>
-}
+})
+
+export default SignaturePad

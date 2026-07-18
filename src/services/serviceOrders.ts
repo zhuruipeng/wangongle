@@ -31,6 +31,7 @@ export type ApiServiceOrder = {
   transcription_error: string | null; asr_request_id: string | null; audio_duration_ms: number | null
   report_generation_status: 'not_started' | 'processing' | 'succeeded' | 'failed'
   report_generation_error: string | null; report_model: string | null; report_generated_at: string | null
+  accepted_at: string | null
 }
 export type CreateOrderPayload = {
   order_no: string; company_name: string; customer_name: string; customer_phone: string
@@ -48,3 +49,6 @@ export const transcribeOrderAudio = (id: string) => apiRequest<{ status: 'succee
 export const generateOrderReport = (id: string, force = false) => apiRequest<GenerateReportResult>(`/api/v1/service-orders/${id}/generate-report?force=${force}`, { method: 'POST', timeout: 120000 })
 export const saveOrderReport = (id: string, report: ApiReport) => apiRequest<ApiServiceOrder>(`/api/v1/service-orders/${id}/report`, { method: 'PUT', data: report })
 export const submitOrderAcceptance = (id: string) => apiRequest<ApiServiceOrder>(`/api/v1/service-orders/${id}/submit-acceptance`, { method: 'POST' })
+export type AcceptanceLinkResult = { url: string; expires_at: string }
+export const createAcceptanceLink = (id: string) => apiRequest<AcceptanceLinkResult>(`/api/v1/service-orders/${id}/acceptance-link`, { method: 'POST' })
+export const revokeAcceptanceLink = (id: string) => apiRequest<{ status: 'revoked' }>(`/api/v1/service-orders/${id}/acceptance-link/revoke`, { method: 'POST' })

@@ -17,7 +17,16 @@ export default defineConfig<'webpack5'>(async (merge) => {
     },
     cache: { enable: false },
     mini: { postcss: { pxtransform: { enable: true }, url: { enable: true, config: { limit: 1024 } }, cssModules: { enable: false } } },
-    h5: { publicPath: '/', staticDirectory: 'static' }
+    h5: {
+      publicPath: '/',
+      staticDirectory: 'static',
+      router: {
+        mode: 'browser',
+        customRoutes: { 'pages/customer-acceptance/index': 'customer-acceptance' }
+      },
+      devServer: { host: '0.0.0.0', port: 10086, historyApiFallback: true },
+      htmlPluginOption: { meta: { robots: 'noindex,nofollow,noarchive' } }
+    }
   }
   if (process.env.NODE_ENV === 'development') return merge({}, base, require('./dev').default)
   return merge({}, base, require('./prod').default)
