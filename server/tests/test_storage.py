@@ -142,21 +142,26 @@ def test_local_signing_fallback_is_random_but_stable_within_process(
     first = LocalStorage(tmp_path)
     second = LocalStorage(tmp_path)
 
-    assert first._signing_secret == second._signing_secret
-    assert len(first._signing_secret) >= 32
+    challenge = b"ganwanle-local-storage-test-challenge-v1"
+    parent_proof = hmac.new(first._signing_secret, challenge, sha256).hexdigest()
+    second_proof = hmac.new(second._signing_secret, challenge, sha256).hexdigest()
+    assert hmac.compare_digest(parent_proof, second_proof)
 
     child_script = (
+        "from hashlib import sha256; import hmac; "
         "from pathlib import Path; from tempfile import TemporaryDirectory; "
         "from server.storage.local import LocalStorage; "
         "root = TemporaryDirectory(); "
-        "print(LocalStorage(Path(root.name))._signing_secret.hex())"
+        "storage = LocalStorage(Path(root.name)); "
+        "challenge = b'ganwanle-local-storage-test-challenge-v1'; "
+        "print(hmac.new(storage._signing_secret, challenge, sha256).hexdigest())"
     )
-    child_secrets = {
+    child_proofs = {
         subprocess.check_output([sys.executable, "-c", child_script], text=True).strip()
         for _ in range(2)
     }
-    assert len(child_secrets) == 2
-    assert first._signing_secret.hex() not in child_secrets
+    assert len(child_proofs) == 2
+    assert parent_proof not in child_proofs
 
     key = build_object_key("development", "u1", "o1", "photos", ".jpg")
     first.put(key, BytesIO(b"private"), "image/jpeg")
