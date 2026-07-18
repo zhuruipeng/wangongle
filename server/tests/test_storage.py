@@ -7,7 +7,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from sqlalchemy import update
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from server.models import ServiceOrder, ServiceOrderPhoto
 from server.services.report_generator import GeneratedReportResult
@@ -143,6 +144,18 @@ def test_production_storage_settings_require_private_cos(monkeypatch: pytest.Mon
         get_storage_settings()
 
 
+@pytest.mark.parametrize("local_root", ["", "   "])
+def test_local_storage_settings_reject_empty_root(
+    monkeypatch: pytest.MonkeyPatch,
+    local_root: str,
+) -> None:
+    monkeypatch.setenv("GANWANLE_ENV", "development")
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    monkeypatch.setenv("LOCAL_STORAGE_ROOT", local_root)
+    with pytest.raises(RuntimeError, match="LOCAL_STORAGE_ROOT"):
+        get_storage_settings()
+
+
 def test_photo_is_private_signed_and_owner_scoped(
     client,
     auth_headers,
@@ -234,6 +247,41 @@ def test_photo_upload_cleans_object_when_audit_fails(
     assert list(local_storage.root.rglob("*.jpg")) == []
 
 
+def test_photo_upload_rollback_delete_failure_enqueues_cleanup(
+    client,
+    auth_headers,
+    create_order,
+    db_session: Session,
+    local_storage: LocalStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from server.models import StorageCleanupJob
+
+    owner = auth_headers("photo-upload-cleanup-job")
+    order_id = create_order(owner)["id"]
+    monkeypatch.setattr(
+        "server.routers.orders.add_audit",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit failed")),
+    )
+    monkeypatch.setattr(
+        local_storage,
+        "delete",
+        lambda _key: (_ for _ in ()).throw(RuntimeError("provider secret must not leak")),
+    )
+    response = client.post(
+        f"/api/v1/service-orders/{order_id}/photos", headers=owner, data={"phase": "before"},
+        files={"file": ("before.jpg", b"new-object", "image/jpeg")},
+    )
+    assert response.status_code == 500
+    assert "provider secret" not in response.text
+    jobs = db_session.query(StorageCleanupJob).all()
+    assert len(jobs) == 1
+    assert jobs[0].source == "photo_upload_rollback"
+    assert jobs[0].object_key.endswith(".jpg")
+    assert jobs[0].attempt_count == 0
+    assert jobs[0].last_error is None
+
+
 def test_audio_replace_keeps_old_object_and_row_when_commit_fails(
     client,
     auth_headers,
@@ -278,6 +326,42 @@ def test_audio_replace_keeps_old_object_and_row_when_commit_fails(
     assert len(list(local_storage.root.rglob("*.mp3"))) == 1
 
 
+def test_successful_audio_replacement_delete_failure_enqueues_cleanup(
+    client,
+    auth_headers,
+    create_order,
+    db_session: Session,
+    local_storage: LocalStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from server.models import StorageCleanupJob
+
+    owner = auth_headers("audio-replace-cleanup-job")
+    order_id = create_order(owner)["id"]
+    first = client.post(
+        f"/api/v1/service-orders/{order_id}/audio", headers=owner,
+        files={"file": ("first.mp3", b"first-audio", "audio/mpeg")},
+    )
+    assert first.status_code == 200, first.text
+    old_key = db_session.get(ServiceOrder, order_id).audio_object_key
+    original_delete = local_storage.delete
+
+    def fail_old_delete(key: str) -> None:
+        if key == old_key:
+            raise RuntimeError("provider secret must not leak")
+        original_delete(key)
+
+    monkeypatch.setattr(local_storage, "delete", fail_old_delete)
+    replaced = client.post(
+        f"/api/v1/service-orders/{order_id}/audio", headers=owner,
+        files={"file": ("second.mp3", b"second-audio", "audio/mpeg")},
+    )
+    assert replaced.status_code == 200
+    assert "provider secret" not in replaced.text
+    job = db_session.query(StorageCleanupJob).one()
+    assert (job.object_key, job.source) == (old_key, "audio_replacement")
+
+
 def test_photo_delete_commits_row_before_deleting_object(
     client,
     auth_headers,
@@ -315,6 +399,8 @@ def test_photo_delete_storage_failure_is_best_effort_after_db_commit(
     local_storage: LocalStorage,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from server.models import StorageCleanupJob
+
     owner = auth_headers("photo-delete-storage-failure")
     order_id = create_order(owner)["id"]
     uploaded = client.post(
@@ -331,6 +417,38 @@ def test_photo_delete_storage_failure_is_best_effort_after_db_commit(
     assert response.status_code == 204
     assert db_session.get(ServiceOrderPhoto, photo.id) is None
     assert local_storage.exists(key)
+    job = db_session.query(StorageCleanupJob).one()
+    assert (job.object_key, job.source) == (key, "photo_delete")
+
+
+def test_cleanup_retry_removes_success_and_retains_safe_failed_job(db_session: Session) -> None:
+    from server.models import StorageCleanupJob
+    from server.storage.cleanup import retry_storage_cleanup
+
+    successful = StorageCleanupJob(object_key="production/delete-me", source="photo_delete")
+    failed = StorageCleanupJob(object_key="production/retry-me", source="audio_replacement")
+    db_session.add_all([successful, failed])
+    db_session.commit()
+
+    class RetryStorage:
+        def __init__(self) -> None:
+            self.fail = True
+
+        def delete(self, key: str) -> None:
+            if key == "production/retry-me" and self.fail:
+                raise RuntimeError("provider secret must not be persisted")
+
+    storage = RetryStorage()
+    assert retry_storage_cleanup(db_session, storage) == {"succeeded": 1, "failed": 1}
+    remaining = db_session.query(StorageCleanupJob).one()
+    assert remaining.id == failed.id
+    assert remaining.attempt_count == 1
+    assert remaining.last_error == "storage delete failed"
+    assert "provider secret" not in remaining.last_error
+
+    storage.fail = False
+    assert retry_storage_cleanup(db_session, storage) == {"succeeded": 1, "failed": 0}
+    assert db_session.query(StorageCleanupJob).count() == 0
 
 
 def _configured_report() -> AiReportSettings:
@@ -418,6 +536,67 @@ def test_fresh_report_processing_lease_rejects_duplicate_claim(
     response = client.post(f"/api/v1/service-orders/{order_id}/generate-report", headers=owner)
     assert response.status_code == 409
     assert provider_called is False
+
+
+def test_non_force_report_claim_is_atomic_with_existing_report(tmp_path: Path) -> None:
+    from server.database import Base
+    from server.models import User
+    from server.routers.orders import build_report_claim_statement
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'claim.db'}")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with sessions() as setup:
+        user = User(openid="claim-user", technician_name="师傅")
+        setup.add(user)
+        setup.flush()
+        order = ServiceOrder(
+            owner_user_id=user.id,
+            order_no="CLAIM-1",
+            company_name="公司",
+            customer_name="客户",
+            customer_phone="13800000000",
+            service_address="地址",
+            service_type="空调安装",
+            technician_name="师傅",
+            transcript="完成安装",
+        )
+        setup.add(order)
+        setup.commit()
+        user_id, order_id = user.id, order.id
+
+    claim_time = datetime.now(timezone.utc)
+    non_force_statement = build_report_claim_statement(
+        order_id, user_id, "model", claim_time, force=False
+    )
+    force_statement = build_report_claim_statement(
+        order_id, user_id, "model", claim_time, force=True
+    )
+    compiled_non_force = str(non_force_statement.compile(engine))
+    compiled_force = str(force_statement.compile(engine))
+    assert "report_json IS NULL" in compiled_non_force
+    assert "report_json IS NULL" not in compiled_force
+
+    with sessions() as stale_session, sessions() as winning_session:
+        stale_session.get(ServiceOrder, order_id)
+        winner = winning_session.get(ServiceOrder, order_id)
+        winner.report_json = '{"winner":true}'
+        winning_session.commit()
+        claimed = stale_session.execute(non_force_statement)
+        stale_session.commit()
+        assert claimed.rowcount == 0
+        stale_session.expire_all()
+        persisted = stale_session.get(ServiceOrder, order_id)
+        assert persisted.report_json == '{"winner":true}'
+        assert persisted.report_generation_status == "not_started"
+
+        forced = stale_session.execute(force_statement)
+        stale_session.commit()
+        assert forced.rowcount == 1
+        stale_session.expire_all()
+        assert stale_session.get(ServiceOrder, order_id).report_generation_status == "processing"
+
+    engine.dispose()
 
 
 def test_stale_report_worker_cannot_overwrite_reclaimed_claim(

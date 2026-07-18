@@ -113,3 +113,15 @@ class AuditEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), index=True)
     outcome: Mapped[str] = mapped_column(String(32), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class StorageCleanupJob(Base):
+    __tablename__ = "storage_cleanup_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    object_key: Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    source: Mapped[str] = mapped_column(String(64), index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

@@ -11,17 +11,7 @@ from sqlalchemy.pool import StaticPool
 from server.database import Base, get_db
 from server.models import User
 from server.security import create_access_token
-
-
-ORDER_PAYLOAD = {
-    "order_no": "ORDER-001",
-    "company_name": "测试服务公司",
-    "customer_name": "敏感客户姓名",
-    "customer_phone": "13800000000",
-    "service_address": "敏感服务地址",
-    "service_type": "空调安装",
-    "status": "in_progress",
-}
+from server.tests.data import ORDER_PAYLOAD
 
 
 class FakeRedis:

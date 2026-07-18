@@ -142,13 +142,16 @@ def get_storage_settings() -> StorageSettings:
         raise RuntimeError("COS_PRESIGNED_SECONDS must be between 60 and 900") from error
     if not 60 <= presigned_seconds <= 900:
         raise RuntimeError("COS_PRESIGNED_SECONDS must be between 60 and 900")
+    local_root = os.getenv(
+        "LOCAL_STORAGE_ROOT",
+        str(Path(__file__).resolve().parent / "data" / "private-storage"),
+    ).strip()
+    if backend == "local" and not local_root:
+        raise RuntimeError("LOCAL_STORAGE_ROOT must not be empty for local storage")
     settings = StorageSettings(
         environment=environment,
         backend=backend,
-        local_root=os.getenv(
-            "LOCAL_STORAGE_ROOT",
-            str(Path(__file__).resolve().parent / "data" / "private-storage"),
-        ).strip(),
+        local_root=local_root,
         cos_secret_id=os.getenv("COS_SECRET_ID", "").strip(),
         cos_secret_key=os.getenv("COS_SECRET_KEY", "").strip(),
         cos_region=os.getenv("COS_REGION", "ap-shanghai").strip(),

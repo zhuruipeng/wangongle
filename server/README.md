@@ -47,6 +47,14 @@ SQLite 数据库位于 `server/data/ganwanle.db`。开发环境的私有对象�
 `server/data/private-storage/`，只能通过登录后的短时签名接口读取；生产环境必须使用私有 COS。
 这些本地数据目录均已加入 `.gitignore`。
 
+对象删除失败会写入 `storage_cleanup_jobs`。可由定时任务安全重复执行：
+
+```bash
+python -m server.retry_storage_cleanup
+```
+
+重试成功会移除任务；失败会保留任务、递增次数，并只保存固定的安全错误摘要。
+
 ## 前端 API 地址
 
 默认地址为 `http://127.0.0.1:8001`。也可在启动构建前设置环境变量：

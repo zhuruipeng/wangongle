@@ -32,6 +32,7 @@ from ..services.report_generator import ReportGenerationError, generate_service_
 from ..services.speech_to_text import SpeechToTextError, transcribe_audio
 from ..settings import get_ai_report_settings, get_asr_settings, get_storage_settings
 from ..storage import LocalStorage, StorageBackend, build_object_key, get_storage
+from ..storage.cleanup import delete_or_enqueue
 
 IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
 AUDIO_TYPES = {
@@ -106,6 +107,35 @@ def mark_report_claim_failed(
         db.commit()
     except Exception:
         db.rollback()
+
+
+def build_report_claim_statement(
+    order_id: str,
+    user_id: str,
+    model: str,
+    claim_time: datetime,
+    force: bool,
+):
+    predicates = [
+        ServiceOrder.id == order_id,
+        ServiceOrder.owner_user_id == user_id,
+        or_(
+            ServiceOrder.report_generation_status != "processing",
+            ServiceOrder.updated_at < claim_time - REPORT_CLAIM_LEASE,
+        ),
+    ]
+    if not force:
+        predicates.append(ServiceOrder.report_json.is_(None))
+    return (
+        update(ServiceOrder)
+        .where(*predicates)
+        .values(
+            report_generation_status="processing",
+            report_generation_error=None,
+            report_model=model,
+            updated_at=claim_time,
+        )
+    )
 
 
 def report_from_order(order: ServiceOrder) -> Optional[ReportPayload]:
@@ -359,7 +389,7 @@ async def upload_photo(
         db.commit()
     except Exception:
         db.rollback()
-        storage.delete(object_key)
+        delete_or_enqueue(db, storage, object_key, "photo_upload_rollback")
         raise
     db.refresh(photo)
     return photo_response(photo, storage)
@@ -391,10 +421,7 @@ def delete_photo(
         db.rollback()
         raise
     if object_key:
-        try:
-            get_storage().delete(object_key)
-        except Exception:
-            pass
+        delete_or_enqueue(db, get_storage(), object_key, "photo_delete")
 
 
 @router.post("/{order_id}/audio", response_model=AudioResponse)
@@ -425,14 +452,11 @@ async def upload_audio(
         db.commit()
     except Exception:
         db.rollback()
-        storage.delete(object_key)
+        delete_or_enqueue(db, storage, object_key, "audio_upload_rollback")
         raise
     db.refresh(order)
     if old_object_key and old_object_key != object_key:
-        try:
-            storage.delete(old_object_key)
-        except Exception:
-            pass
+        delete_or_enqueue(db, storage, old_object_key, "audio_replacement")
     return AudioResponse(
         audio_url=storage.presigned_get_url(object_key, storage_settings.presigned_seconds)
     )
@@ -515,20 +539,12 @@ def generate_order_report(
     claim_time = datetime.now(timezone.utc)
     try:
         claimed = db.execute(
-            update(ServiceOrder)
-            .where(
-                ServiceOrder.id == order.id,
-                ServiceOrder.owner_user_id == current_user.id,
-                or_(
-                    ServiceOrder.report_generation_status != "processing",
-                    ServiceOrder.updated_at < claim_time - REPORT_CLAIM_LEASE,
-                ),
-            )
-            .values(
-                report_generation_status="processing",
-                report_generation_error=None,
-                report_model=settings.model,
-                updated_at=claim_time,
+            build_report_claim_statement(
+                order.id,
+                current_user.id,
+                settings.model,
+                claim_time,
+                force,
             )
         )
         db.commit()
