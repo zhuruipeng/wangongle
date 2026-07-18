@@ -1,0 +1,20 @@
+@use './variables' as *;
+
+page { background: $color-bg; color: $color-text; font-size: $font-body; }
+view, text, button, input, textarea { box-sizing: border-box; }
+button::after { border: 0; }
+.page { min-height: 100vh; padding: 28px 28px calc(150px + env(safe-area-inset-bottom)); }
+.page-title { font-size: $font-title; font-weight: 700; color: $color-primary; margin-bottom: 12px; }
+.muted { color: $color-muted; font-size: 26px; }
+.card { background: $color-card; border-radius: $radius-lg; padding: 28px; box-shadow: 0 8px 26px rgba(20, 49, 82, .06); }
+.primary-btn, .secondary-btn { border-radius: 18px; font-size: 32px; font-weight: 600; line-height: 96px; height: 96px; }
+.primary-btn { background: $color-primary; color: white; }
+.primary-btn[disabled] { background: #aab6c3; color: #fff; }
+.secondary-btn { background: $color-primary-light; color: $color-primary; }
+.fixed-actions { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; padding: 18px 28px calc(18px + env(safe-area-inset-bottom)); background: rgba(255,255,255,.98); box-shadow: 0 -8px 24px rgba(20,49,82,.08); display: flex; gap: 18px; }
+.fixed-actions button { flex: 1; }
+.section-title { font-size: 32px; font-weight: 700; margin-bottom: 20px; }
+.field { margin-top: 22px; }
+.field-label { display: block; color: $color-muted; font-size: 25px; margin-bottom: 10px; }
+.text-input, .text-area { width: 100%; background: #f7f9fb; border: 2px solid $color-border; border-radius: 14px; padding: 20px; font-size: 29px; }
+.text-area { min-height: 180px; }

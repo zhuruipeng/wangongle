@@ -1,0 +1,8 @@
+@use '../../styles/variables' as *;
+.photo-button { height: 126px; line-height: 126px; color: $color-primary; background: $color-primary-light; border: 3px dashed #7e9bb9; border-radius: $radius-lg; font-size: 34px; font-weight: 700; }
+.photo-tip { display: block; color: $color-muted; font-size: 24px; text-align: center; margin: 16px 0 22px; }
+.photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.photo-item { position: relative; height: 190px; border-radius: 15px; overflow: visible; }
+.photo-item image { width: 100%; height: 100%; border-radius: 15px; }
+.delete { position: absolute; top: -12px; right: -10px; width: 44px; height: 44px; border-radius: 50%; background: #d94b4b; color: white; line-height: 40px; text-align: center; font-size: 38px; }
+.photo-count { display: block; color: $color-success; margin-top: 18px; font-size: 26px; }

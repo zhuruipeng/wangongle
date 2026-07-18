@@ -1,0 +1,10 @@
+@use '../../styles/variables' as *;
+.steps { display: flex; justify-content: space-between; margin: 4px 0 30px; }
+.step { position: relative; flex: 1; text-align: center; color: $color-muted; font-size: 22px; }
+.step:not(:last-child)::after { content: ''; position: absolute; top: 22px; left: 62%; right: -38%; height: 4px; background: $color-border; z-index: 0; }
+.step.done:not(:last-child)::after { background: $color-success; }
+.step-dot { position: relative; z-index: 1; width: 46px; height: 46px; line-height: 46px; margin: 0 auto 8px; border-radius: 50%; background: #dfe5ec; color: white; font-size: 24px; }
+.step.active { color: $color-primary; font-weight: 700; }
+.step.active .step-dot { background: $color-primary; }
+.step.done { color: $color-success; }
+.step.done .step-dot { background: $color-success; }

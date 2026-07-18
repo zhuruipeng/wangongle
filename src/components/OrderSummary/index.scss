@@ -1,0 +1,6 @@
+@use '../../styles/variables' as *;
+.order { margin-bottom: 28px; }
+.order-head { display: flex; justify-content: space-between; font-size: 24px; color: $color-muted; margin-bottom: 18px; }
+.status { color: $color-warning; background: #fff4e8; border-radius: 99px; padding: 6px 16px; }
+.order-main { margin-bottom: 18px; }.customer { font-size: 34px; font-weight: 700; margin-right: 18px; }.phone { color: $color-muted; }
+.order-line { display: block; margin-top: 12px; line-height: 1.5; }

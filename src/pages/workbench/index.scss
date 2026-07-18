@@ -1,0 +1,5 @@
+@use '../../styles/variables' as *;
+.workbench { padding-bottom: 40px; }.brand { display: flex; align-items: baseline; gap: 20px; }.slogan { color: $color-muted; font-size: 24px; }
+.identity { display: flex; flex-direction: column; gap: 10px; padding: 24px; margin: 14px 0 28px; border-radius: $radius-md; background: #eef3f8; color: #4d6176; font-size: 26px; }
+.start-btn { height: 150px; line-height: 150px; background: $color-primary; color: white; border-radius: $radius-lg; font-size: 40px; font-weight: 700; box-shadow: 0 15px 30px rgba(23,59,101,.22); margin-bottom: 28px; }
+.stats { display: flex; gap: 18px; margin-bottom: 34px; }.stat { flex: 1; text-align: center; display: flex; flex-direction: column; gap: 8px; color: $color-muted; }.number { color: $color-success; font-size: 48px; font-weight: 700; }.number.warning { color: $color-warning; }

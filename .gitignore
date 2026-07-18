@@ -1,0 +1,14 @@
+node_modules/
+.swc/
+dist/
+dist-h5/
+.env
+project.private.config.json
+server/data/*.db
+server/uploads/
+server/.env
+server/.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+*.log
