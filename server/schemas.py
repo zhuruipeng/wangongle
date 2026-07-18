@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -18,25 +18,25 @@ class ServiceOrderCreate(BaseModel):
 
 
 class ServiceOrderPatch(BaseModel):
-    company_name: str | None = Field(default=None, min_length=1, max_length=200)
-    customer_name: str | None = Field(default=None, min_length=1, max_length=100)
-    customer_phone: str | None = Field(default=None, min_length=1, max_length=50)
-    service_address: str | None = Field(default=None, min_length=1, max_length=500)
-    service_type: str | None = Field(default=None, min_length=1, max_length=300)
-    technician_name: str | None = Field(default=None, min_length=1, max_length=100)
-    status: OrderStatus | None = None
-    transcript: str | None = Field(default=None, max_length=10000)
+    company_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    customer_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    customer_phone: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    service_address: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    service_type: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    technician_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    status: Optional[OrderStatus] = None
+    transcript: Optional[str] = Field(default=None, max_length=10000)
 
 
 class MaterialItem(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     quantity: str = Field(min_length=1, max_length=100)
-    amount_cents: int | None = Field(default=None, ge=0)
+    amount_cents: Optional[int] = Field(default=None, ge=0)
 
 
 class FeeItem(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    amount_cents: int | None = Field(default=None, ge=0)
+    amount_cents: Optional[int] = Field(default=None, ge=0)
 
 
 class ReportPayload(BaseModel):
@@ -58,10 +58,10 @@ class GeneratedCompletedItem(BaseModel):
 class GeneratedMaterialItem(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     name: str = Field(min_length=1, max_length=200)
-    quantity: float | None
+    quantity: Optional[float]
     unit: str = Field(max_length=50)
-    unit_price_cents: int | None = Field(ge=0)
-    amount_cents: int | None = Field(ge=0)
+    unit_price_cents: Optional[int] = Field(ge=0)
+    amount_cents: Optional[int] = Field(ge=0)
     source_text: str = Field(min_length=1, max_length=2000)
     needs_confirmation: Literal[True]
 
@@ -75,7 +75,7 @@ class GeneratedMaterialItem(BaseModel):
 class GeneratedLaborItem(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     name: str = Field(min_length=1, max_length=200)
-    amount_cents: int | None = Field(ge=0)
+    amount_cents: Optional[int] = Field(ge=0)
     source_text: str = Field(min_length=1, max_length=2000)
     needs_confirmation: Literal[True]
 
@@ -128,20 +128,20 @@ class ServiceOrderResponse(BaseModel):
     service_type: str
     technician_name: str
     status: OrderStatus
-    transcript: str | None
-    report: ReportPayload | None
-    generated_report: GeneratedServiceReport | None
+    transcript: Optional[str]
+    report: Optional[ReportPayload]
+    generated_report: Optional[GeneratedServiceReport]
     total_amount_cents: int
     paid_amount_cents: int
-    audio_url: str | None
+    audio_url: Optional[str]
     transcription_status: Literal["not_started", "processing", "succeeded", "failed"]
-    transcription_error: str | None
-    asr_request_id: str | None
-    audio_duration_ms: int | None
+    transcription_error: Optional[str]
+    asr_request_id: Optional[str]
+    audio_duration_ms: Optional[int]
     report_generation_status: Literal["not_started", "processing", "succeeded", "failed"]
-    report_generation_error: str | None
-    report_model: str | None
-    report_generated_at: datetime | None
+    report_generation_error: Optional[str]
+    report_model: Optional[str]
+    report_generated_at: Optional[datetime]
     before_photos: list[PhotoResponse]
     after_photos: list[PhotoResponse]
     created_at: datetime
@@ -154,6 +154,6 @@ class AudioResponse(BaseModel):
 
 class TranscriptionResponse(BaseModel):
     status: Literal["succeeded", "failed"]
-    transcript: str | None = None
-    audio_duration_ms: int | None = None
-    error: str | None = None
+    transcript: Optional[str] = None
+    audio_duration_ms: Optional[int] = None
+    error: Optional[str] = None

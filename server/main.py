@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
@@ -63,7 +63,7 @@ def get_order_or_404(db: Session, order_id: str) -> ServiceOrder:
     return order
 
 
-def report_from_order(order: ServiceOrder) -> ReportPayload | None:
+def report_from_order(order: ServiceOrder) -> Optional[ReportPayload]:
     if not order.report_json:
         return None
     try:
@@ -85,7 +85,7 @@ def report_from_order(order: ServiceOrder) -> ReportPayload | None:
         )
 
 
-def generated_report_from_order(order: ServiceOrder) -> GeneratedServiceReport | None:
+def generated_report_from_order(order: ServiceOrder) -> Optional[GeneratedServiceReport]:
     if not order.report_json:
         return None
     try:
@@ -132,7 +132,7 @@ def create_service_order(payload: ServiceOrderCreate, db: Session = Depends(get_
 
 
 @app.get("/api/v1/service-orders", response_model=list[ServiceOrderResponse])
-def list_service_orders(status_filter: str | None = Query(default=None, alias="status"), db: Session = Depends(get_db)):
+def list_service_orders(status_filter: Optional[str] = Query(default=None, alias="status"), db: Session = Depends(get_db)):
     statement = select(ServiceOrder).order_by(ServiceOrder.created_at.desc())
     if status_filter:
         allowed = {"draft", "in_progress", "waiting_acceptance", "accepted", "cancelled"}

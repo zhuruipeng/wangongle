@@ -1,6 +1,7 @@
 import json
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Optional
 
 from pydantic import ValidationError
 
@@ -59,7 +60,7 @@ def validate_and_recalculate(raw_json: str, transcript: str) -> GeneratedReportR
 def generate_service_report(service_type: str, transcript: str, settings: AiReportSettings) -> GeneratedReportResult:
     if not settings.is_configured:
         raise ReportGenerationError("AI报告服务尚未配置")
-    last_error: ReportGenerationError | None = None
+    last_error: Optional[ReportGenerationError] = None
     for _ in range(2):
         try:
             return validate_and_recalculate(request_qwen_report(service_type, transcript, settings), transcript)

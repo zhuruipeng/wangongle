@@ -8,6 +8,7 @@ server/data/*.db
 server/uploads/
 server/.env
 server/.venv/
+server/.run/
 __pycache__/
 *.py[cod]
 .DS_Store

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Optional
 from uuid import uuid4
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text
@@ -24,19 +25,19 @@ class ServiceOrder(Base):
     service_type: Mapped[str] = mapped_column(String(300))
     technician_name: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(32), index=True, default="draft")
-    transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
-    report_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transcript: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    report_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     total_amount_cents: Mapped[int] = mapped_column(Integer, default=0)
     paid_amount_cents: Mapped[int] = mapped_column(Integer, default=0)
-    audio_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    audio_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     transcription_status: Mapped[str] = mapped_column(String(32), default="not_started")
-    transcription_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    asr_request_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    audio_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    transcription_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    asr_request_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    audio_duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     report_generation_status: Mapped[str] = mapped_column(String(32), default="not_started")
-    report_generation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    report_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    report_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    report_generation_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    report_model: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    report_generated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
     photos: Mapped[list["ServiceOrderPhoto"]] = relationship(back_populates="service_order")

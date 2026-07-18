@@ -1,4 +1,5 @@
 import json
+from typing import Optional
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -28,7 +29,7 @@ UNCONFIGURED = AiReportSettings(
 )
 
 
-def create_order(transcript: str | None) -> str:
+def create_order(transcript: Optional[str]) -> str:
     response = client.post("/api/v1/service-orders", json={
         "order_no": f"AI-{uuid4().hex[:12]}",
         "company_name": "测试公司",
