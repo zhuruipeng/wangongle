@@ -4,16 +4,15 @@ import os
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .database import UPLOAD_DIR, get_db
+from .database import get_db
 from .middleware import RequestIDMiddleware
 from .routers import orders
 from .routers.auth import router as auth_router
 from .services.rate_limit import create_redis_client
-from .settings import get_auth_settings, get_redis_settings
+from .settings import get_auth_settings, get_redis_settings, get_storage_settings
 
 logger = logging.getLogger(__name__)
 api_router = APIRouter()
@@ -30,6 +29,7 @@ def health(db: Session = Depends(get_db)):
 
 def create_app() -> FastAPI:
     get_auth_settings()
+    get_storage_settings()
     application = FastAPI(title="干完了本地开发 API", version="0.1.0")
     application.state.redis = create_redis_client(get_redis_settings())
     application.add_middleware(
@@ -50,8 +50,6 @@ def create_app() -> FastAPI:
     application.include_router(api_router)
     application.include_router(auth_router)
     application.include_router(orders.router, prefix="/api/v1/service-orders")
-    application.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
-
     @application.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, _error: Exception) -> JSONResponse:
         request_id = getattr(request.state, "request_id", "") or "unknown"

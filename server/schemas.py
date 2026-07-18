@@ -111,6 +111,9 @@ class PhotoResponse(BaseModel):
     phase: Literal["before", "after"]
     file_url: str
     original_filename: str
+    content_type: str
+    size_bytes: int
+    sha256: str
     sort_order: int
     created_at: datetime
 

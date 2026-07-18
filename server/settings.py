@@ -83,6 +83,18 @@ class RedisSettings:
     key_prefix: str = "ganwanle"
 
 
+@dataclass(frozen=True)
+class StorageSettings:
+    environment: str
+    backend: str
+    local_root: str
+    cos_secret_id: str
+    cos_secret_key: str
+    cos_region: str
+    cos_bucket: str
+    presigned_seconds: int = 300
+
+
 def get_database_settings() -> DatabaseSettings:
     environment = os.getenv("GANWANLE_ENV", "development").strip().lower()
     default = f"sqlite:///{(Path(__file__).resolve().parent / 'data' / 'ganwanle.db').as_posix()}"
@@ -117,3 +129,35 @@ def get_redis_settings() -> RedisSettings:
         url=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").strip(),
         key_prefix=os.getenv("REDIS_KEY_PREFIX", "ganwanle").strip() or "ganwanle",
     )
+
+
+def get_storage_settings() -> StorageSettings:
+    environment = os.getenv("GANWANLE_ENV", "development").strip().lower()
+    backend = os.getenv("STORAGE_BACKEND", "local").strip().lower()
+    if backend not in {"local", "cos"}:
+        raise RuntimeError("STORAGE_BACKEND must be local or cos")
+    try:
+        presigned_seconds = int(os.getenv("COS_PRESIGNED_SECONDS", "300"))
+    except ValueError as error:
+        raise RuntimeError("COS_PRESIGNED_SECONDS must be between 60 and 900") from error
+    if not 60 <= presigned_seconds <= 900:
+        raise RuntimeError("COS_PRESIGNED_SECONDS must be between 60 and 900")
+    settings = StorageSettings(
+        environment=environment,
+        backend=backend,
+        local_root=os.getenv(
+            "LOCAL_STORAGE_ROOT",
+            str(Path(__file__).resolve().parent / "data" / "private-storage"),
+        ).strip(),
+        cos_secret_id=os.getenv("COS_SECRET_ID", "").strip(),
+        cos_secret_key=os.getenv("COS_SECRET_KEY", "").strip(),
+        cos_region=os.getenv("COS_REGION", "ap-shanghai").strip(),
+        cos_bucket=os.getenv("COS_BUCKET", "").strip(),
+        presigned_seconds=presigned_seconds,
+    )
+    if environment == "production":
+        if backend != "cos":
+            raise RuntimeError("Production storage requires private COS")
+        if not all((settings.cos_secret_id, settings.cos_secret_key, settings.cos_region, settings.cos_bucket)):
+            raise RuntimeError("Production storage requires COS credentials, region, and bucket")
+    return settings

@@ -7,9 +7,7 @@ from .settings import get_database_settings
 
 SERVER_DIR = Path(__file__).resolve().parent
 DATA_DIR = SERVER_DIR / "data"
-UPLOAD_DIR = SERVER_DIR / "uploads"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 database_settings = get_database_settings()
 

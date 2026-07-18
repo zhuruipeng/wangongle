@@ -1,34 +1,7 @@
-import os
 from uuid import uuid4
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-from server.database import Base, get_db
-from server.main import create_app
-
-
-def build_test_client() -> TestClient:
-    os.environ["JWT_SECRET"] = "legacy-test-secret-that-is-long-enough"
-    engine = create_engine(
-        "sqlite+pysqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-    application = create_app()
-    application.state.redis = None
-
-    def override_get_db():
-        with testing_session() as session:
-            yield session
-
-    application.dependency_overrides[get_db] = override_get_db
-    return TestClient(application)
+from server.tests.helpers import build_test_client
 
 
 def run() -> None:

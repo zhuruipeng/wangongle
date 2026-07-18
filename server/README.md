@@ -43,7 +43,9 @@ AI_REPORT_ENABLED=true
 
 不要把 `DASHSCOPE_API_KEY` 写入前端环境变量、源码、日志或错误响应。本地接口没有登录和权限控制，不可直接部署到公网。
 
-SQLite 数据库位于 `server/data/ganwanle.db`，上传文件位于 `server/uploads/`。二者均已加入 `.gitignore`。
+SQLite 数据库位于 `server/data/ganwanle.db`。开发环境的私有对象默认位于
+`server/data/private-storage/`，只能通过登录后的短时签名接口读取；生产环境必须使用私有 COS。
+这些本地数据目录均已加入 `.gitignore`。
 
 ## 前端 API 地址
 

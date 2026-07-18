@@ -5,6 +5,7 @@ dist-h5/
 .env
 project.private.config.json
 server/data/*.db
+server/data/private-storage/
 server/uploads/
 server/.env
 server/.venv/
