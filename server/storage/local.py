@@ -2,29 +2,33 @@ from hashlib import sha256
 import hmac
 import os
 from pathlib import Path
+import secrets
 import shutil
 import time
 from typing import BinaryIO, Optional
 from urllib.parse import quote
 
+from .keys import parse_object_key
+
 
 LOCAL_FILE_ROUTE = "/api/v1/service-orders/private-files"
+_PROCESS_SIGNING_SECRET = secrets.token_bytes(32)
 
 
 class LocalStorage:
     def __init__(self, root: Path, signing_secret: Optional[str] = None) -> None:
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        configured_secret = (signing_secret or os.getenv("JWT_SECRET", "")).strip()
         self._signing_secret = (
-            signing_secret
-            or os.getenv("JWT_SECRET", "")
-            or "ganwanle-development-local-storage-only"
-        ).encode("utf-8")
+            configured_secret.encode("utf-8")
+            if configured_secret
+            else _PROCESS_SIGNING_SECRET
+        )
 
     def resolve_key(self, key: str) -> Path:
-        if not key or Path(key).is_absolute():
-            raise ValueError("invalid storage key")
-        target = (self.root / key).resolve()
+        parsed = parse_object_key(key)
+        target = (self.root / parsed.key).resolve()
         if target == self.root or self.root not in target.parents:
             raise ValueError("invalid storage key")
         return target
@@ -54,22 +58,25 @@ class LocalStorage:
         return self.resolve_key(key).is_file()
 
     def _signature(self, key: str, expires: int) -> str:
-        payload = f"{key}:{expires}".encode("utf-8")
+        canonical_key = parse_object_key(key).key
+        payload = f"{canonical_key}:{expires}".encode("utf-8")
         return hmac.new(self._signing_secret, payload, sha256).hexdigest()
 
     def presigned_get_url(self, key: str, expires_seconds: int) -> str:
-        self.resolve_key(key)
+        canonical_key = parse_object_key(key).key
+        self.resolve_key(canonical_key)
         expires = int(time.time()) + expires_seconds
-        signature = self._signature(key, expires)
-        return f"{LOCAL_FILE_ROUTE}/{quote(key, safe='/')}?expires={expires}&signature={signature}"
+        signature = self._signature(canonical_key, expires)
+        return f"{LOCAL_FILE_ROUTE}/{quote(canonical_key, safe='/')}?expires={expires}&signature={signature}"
 
     def validate_presigned_get(self, key: str, expires: int, signature: str) -> Path:
         if expires < int(time.time()):
             raise ValueError("expired storage signature")
-        expected = self._signature(key, expires)
+        canonical_key = parse_object_key(key).key
+        expected = self._signature(canonical_key, expires)
         if not hmac.compare_digest(expected, signature):
             raise ValueError("invalid storage signature")
-        target = self.resolve_key(key)
+        target = self.resolve_key(canonical_key)
         if not target.is_file():
-            raise FileNotFoundError(key)
+            raise FileNotFoundError(canonical_key)
         return target

@@ -1,16 +1,21 @@
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+import hmac
+import importlib
 from io import BytesIO
 from pathlib import Path
+import subprocess
+import sys
+import time
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import pytest
 from sqlalchemy import update
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from server.models import ServiceOrder, ServiceOrderPhoto
+from server.models import ServiceOrder, ServiceOrderPhoto, User
 from server.services.report_generator import GeneratedReportResult
 from server.settings import AiReportSettings, StorageSettings, get_storage_settings
 from server.storage import CosStorage, LocalStorage, build_object_key
@@ -52,10 +57,11 @@ def test_local_storage_round_trip(tmp_path: Path) -> None:
     target = tmp_path / "download.jpg"
     storage.download_to(key, target)
     assert target.read_bytes() == b"image"
-    storage.move(key, "development/archive/a.jpg")
-    assert storage.exists("development/archive/a.jpg")
-    storage.delete("development/archive/a.jpg")
-    assert not storage.exists("development/archive/a.jpg")
+    moved_key = "development/users/u1/orders/o1/signatures/a.jpg"
+    storage.move(key, moved_key)
+    assert storage.exists(moved_key)
+    storage.delete(moved_key)
+    assert not storage.exists(moved_key)
 
 
 @pytest.mark.parametrize("key", ["../secret", "development/../../secret", "/absolute"])
@@ -71,6 +77,159 @@ def test_object_key_contains_only_ids() -> None:
     assert key.endswith(".jpg")
     pending = build_object_key("production", "user-id", "order-id", "audio-pending", ".mp3")
     assert pending.startswith("production/audio-pending/users/user-id/orders/order-id/")
+
+
+def test_signed_dotdot_key_cannot_cross_local_storage_owner(
+    local_storage: LocalStorage,
+) -> None:
+    from fastapi import HTTPException
+    from server.routers.orders import get_private_local_file
+
+    victim_key = build_object_key(
+        "development", "victim", "victim-order", "photos", ".jpg"
+    )
+    local_storage.put(victim_key, BytesIO(b"victim-private-data"), "image/jpeg")
+    filename = victim_key.rsplit("/", 1)[1]
+    malicious_key = (
+        "development/users/attacker/orders/attacker-order/photos/"
+        f"../../../../victim/orders/victim-order/photos/{filename}"
+    )
+    expires = int(time.time()) + 300
+    signature = hmac.new(
+        b"test-storage-signing-secret",
+        f"{malicious_key}:{expires}".encode("utf-8"),
+        sha256,
+    ).hexdigest()
+
+    with pytest.raises(HTTPException) as rejected:
+        get_private_local_file(
+            malicious_key,
+            expires=expires,
+            signature=signature,
+            current_user=User(id="attacker", openid="attacker-openid"),
+        )
+
+    assert rejected.value.status_code in {403, 404}
+    assert local_storage.resolve_key(victim_key).read_bytes() == b"victim-private-data"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "development/users/u1/orders/o1/photos/../a.jpg",
+        "development/users/u1/orders/o1/./photos/a.jpg",
+        "development/users//orders/o1/photos/a.jpg",
+        r"development/users/u1/orders/o1/photos\\..\\a.jpg",
+        unquote("development/users/u1/orders/o1/photos/%2e%2e/a.jpg"),
+        unquote("development/users/u1%2F%2Forders/o1/photos/a.jpg"),
+    ],
+)
+def test_object_key_parser_rejects_ambiguous_segments(tmp_path: Path, key: str) -> None:
+    from server.storage import parse_object_key
+
+    storage = LocalStorage(tmp_path, signing_secret="test-storage-signing-secret")
+    with pytest.raises(ValueError, match="storage key"):
+        parse_object_key(key)
+    with pytest.raises(ValueError, match="storage key"):
+        storage.presigned_get_url(key, expires_seconds=300)
+
+
+def test_local_signing_fallback_is_random_but_stable_within_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    first = LocalStorage(tmp_path)
+    second = LocalStorage(tmp_path)
+
+    assert first._signing_secret == second._signing_secret
+    assert len(first._signing_secret) >= 32
+
+    child_script = (
+        "from pathlib import Path; from tempfile import TemporaryDirectory; "
+        "from server.storage.local import LocalStorage; "
+        "root = TemporaryDirectory(); "
+        "print(LocalStorage(Path(root.name))._signing_secret.hex())"
+    )
+    child_secrets = {
+        subprocess.check_output([sys.executable, "-c", child_script], text=True).strip()
+        for _ in range(2)
+    }
+    assert len(child_secrets) == 2
+    assert first._signing_secret.hex() not in child_secrets
+
+    key = build_object_key("development", "u1", "o1", "photos", ".jpg")
+    first.put(key, BytesIO(b"private"), "image/jpeg")
+    signed_url = urlparse(first.presigned_get_url(key, expires_seconds=300))
+    query = parse_qs(signed_url.query)
+    assert second.validate_presigned_get(
+        key,
+        expires=int(query["expires"][0]),
+        signature=query["signature"][0],
+    ).read_bytes() == b"private"
+
+
+def test_local_signing_fallback_survives_storage_cache_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from server.storage import get_storage
+
+    monkeypatch.setenv("GANWANLE_ENV", "development")
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    monkeypatch.setenv("LOCAL_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    get_storage.cache_clear()
+    try:
+        first = get_storage()
+        assert isinstance(first, LocalStorage)
+        key = build_object_key("development", "u1", "o1", "photos", ".jpg")
+        first.put(key, BytesIO(b"cache-reset-private"), "image/jpeg")
+        signed_url = urlparse(first.presigned_get_url(key, expires_seconds=300))
+        query = parse_qs(signed_url.query)
+
+        get_storage.cache_clear()
+        second = get_storage()
+        assert isinstance(second, LocalStorage)
+        assert second.validate_presigned_get(
+            key,
+            expires=int(query["expires"][0]),
+            signature=query["signature"][0],
+        ).read_bytes() == b"cache-reset-private"
+    finally:
+        get_storage.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "server.test_smoke",
+        "server.test_report_generation",
+        "server.test_transcription",
+    ],
+)
+def test_legacy_run_closes_test_client(
+    module_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module(module_name)
+    test_client = module.build_test_client()
+    original_close = test_client.close
+    close_count = 0
+
+    def tracked_close() -> None:
+        nonlocal close_count
+        close_count += 1
+        original_close()
+
+    monkeypatch.setattr(test_client, "close", tracked_close)
+    monkeypatch.setattr(module, "build_test_client", lambda: test_client)
+    try:
+        module.run()
+        assert close_count == 1
+    finally:
+        if close_count == 0:
+            original_close()
 
 
 def test_cos_storage_uses_private_put_copy_delete_and_presigned_get(tmp_path: Path) -> None:

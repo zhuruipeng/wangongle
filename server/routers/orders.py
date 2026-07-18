@@ -31,7 +31,7 @@ from ..security import get_current_user
 from ..services.report_generator import ReportGenerationError, generate_service_report
 from ..services.speech_to_text import SpeechToTextError, transcribe_audio
 from ..settings import get_ai_report_settings, get_asr_settings, get_storage_settings
-from ..storage import LocalStorage, StorageBackend, build_object_key, get_storage
+from ..storage import LocalStorage, StorageBackend, build_object_key, get_storage, parse_object_key
 from ..storage.cleanup import delete_or_enqueue
 
 IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
@@ -213,15 +213,6 @@ def order_response(order: ServiceOrder) -> ServiceOrderResponse:
     )
 
 
-def object_key_owner(key: str) -> Optional[str]:
-    parts = key.split("/")
-    try:
-        users_index = parts.index("users")
-        return parts[users_index + 1]
-    except (ValueError, IndexError):
-        return None
-
-
 @router.get("/private-files/{key:path}", include_in_schema=False)
 def get_private_local_file(
     key: str,
@@ -232,10 +223,14 @@ def get_private_local_file(
     storage = get_storage()
     if not isinstance(storage, LocalStorage):
         raise HTTPException(status_code=404, detail="文件不存在")
-    if object_key_owner(key) != current_user.id:
+    try:
+        parsed_key = parse_object_key(key)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="文件签名无效或已过期") from None
+    if parsed_key.owner_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="文件不存在")
     try:
-        path = storage.validate_presigned_get(key, expires, signature)
+        path = storage.validate_presigned_get(parsed_key.key, expires, signature)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="文件不存在") from None
     except ValueError:

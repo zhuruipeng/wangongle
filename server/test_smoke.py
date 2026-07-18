@@ -6,6 +6,13 @@ from server.tests.helpers import build_test_client
 
 def run() -> None:
     client = build_test_client()
+    try:
+        _run(client)
+    finally:
+        client.close()
+
+
+def _run(client) -> None:
     with patch(
         "server.routers.auth.exchange_code",
         return_value={"openid": f"smoke-{uuid4().hex}", "unionid": None},

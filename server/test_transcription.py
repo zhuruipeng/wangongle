@@ -50,6 +50,13 @@ def upload_audio(client: TestClient, order_id: str, headers: dict[str, str]) -> 
 
 def run() -> None:
     client = build_test_client()
+    try:
+        _run(client)
+    finally:
+        client.close()
+
+
+def _run(client: TestClient) -> None:
     headers = auth_headers(client)
     # 1. Audio exists: mocked Tencent response is persisted.
     success_id = create_order(client, headers); upload_audio(client, success_id, headers)

@@ -100,6 +100,13 @@ def expect_generation_error(raw_json: str, transcript: str) -> None:
 
 def run() -> None:
     client = build_test_client()
+    try:
+        _run(client)
+    finally:
+        client.close()
+
+
+def _run(client: TestClient) -> None:
     headers = auth_headers(client)
     transcript = "完成空调安装，用了两米铜管，安装费一百五十元。"
     valid_json = json.dumps(report_payload(transcript), ensure_ascii=False)
