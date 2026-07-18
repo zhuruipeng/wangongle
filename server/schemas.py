@@ -4,6 +4,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 OrderStatus = Literal["draft", "in_progress", "waiting_acceptance", "accepted", "cancelled"]
+MutableOrderStatus = Literal["draft", "in_progress", "waiting_acceptance", "cancelled"]
 
 
 class ServiceOrderCreate(BaseModel):
@@ -13,7 +14,7 @@ class ServiceOrderCreate(BaseModel):
     customer_phone: str = Field(min_length=1, max_length=50)
     service_address: str = Field(min_length=1, max_length=500)
     service_type: str = Field(min_length=1, max_length=300)
-    status: OrderStatus = "draft"
+    status: MutableOrderStatus = "draft"
 
 
 class ServiceOrderPatch(BaseModel):
@@ -22,7 +23,7 @@ class ServiceOrderPatch(BaseModel):
     customer_phone: Optional[str] = Field(default=None, min_length=1, max_length=50)
     service_address: Optional[str] = Field(default=None, min_length=1, max_length=500)
     service_type: Optional[str] = Field(default=None, min_length=1, max_length=300)
-    status: Optional[OrderStatus] = None
+    status: Optional[MutableOrderStatus] = None
     transcript: Optional[str] = Field(default=None, max_length=10000)
 
 

@@ -6,10 +6,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, Optional
 from uuid import uuid4
-import zlib
+import warnings
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -353,16 +354,15 @@ def get_service_order(
 def patch_service_order(
     order_id: str,
     payload: ServiceOrderPatch,
-    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     order = get_order_or_404(db, current_user.id, order_id)
     previous_status = order.status
+    if previous_status == "accepted" and payload.status is not None:
+        raise HTTPException(status_code=409, detail="已验收服务单不能更改状态")
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(order, key, value)
-    if payload.status == "accepted" and previous_status != "accepted":
-        add_audit(db, request, current_user, order.id, "acceptance", "succeeded")
     db.commit()
     db.refresh(order)
     return order_response(order)
@@ -406,88 +406,35 @@ async def read_validated_upload(
     return ValidatedUpload(buffer, original_name, content_type, suffix, size, digest.hexdigest())
 
 
-def is_structurally_valid_png(content: bytes) -> bool:
-    if not content.startswith(b"\x89PNG\r\n\x1a\n"):
-        return False
-    offset = 8
-    saw_ihdr = False
-    saw_idat = False
-    while offset + 12 <= len(content):
-        length = int.from_bytes(content[offset:offset + 4], "big")
-        chunk_type = content[offset + 4:offset + 8]
-        chunk_end = offset + 12 + length
-        if chunk_end > len(content):
-            return False
-        chunk_data = content[offset + 8:offset + 8 + length]
-        expected_crc = int.from_bytes(content[offset + 8 + length:chunk_end], "big")
-        if zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF != expected_crc:
-            return False
-        if not saw_ihdr:
-            if chunk_type != b"IHDR" or length != 13:
-                return False
-            width = int.from_bytes(chunk_data[0:4], "big")
-            height = int.from_bytes(chunk_data[4:8], "big")
-            if width == 0 or height == 0:
-                return False
-            saw_ihdr = True
-        elif chunk_type == b"IDAT":
-            saw_idat = True
-        elif chunk_type == b"IEND":
-            return length == 0 and saw_idat and chunk_end == len(content)
-        offset = chunk_end
-    return False
-
-
-def is_structurally_valid_jpeg(content: bytes) -> bool:
-    if len(content) < 4 or not content.startswith(b"\xff\xd8") or not content.endswith(b"\xff\xd9"):
-        return False
-    offset = 2
-    saw_frame = False
-    frame_markers = {
-        0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
-        0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
-    }
-    while offset < len(content) - 2:
-        if content[offset] != 0xFF:
-            offset += 1
-            continue
-        while offset < len(content) and content[offset] == 0xFF:
-            offset += 1
-        if offset >= len(content):
-            return False
-        marker = content[offset]
-        offset += 1
-        if marker == 0xD9:
-            return saw_frame and offset == len(content)
-        if marker == 0xDA:
-            return saw_frame and content.endswith(b"\xff\xd9")
-        if marker in {0x01, *range(0xD0, 0xD8)}:
-            continue
-        if offset + 2 > len(content):
-            return False
-        segment_length = int.from_bytes(content[offset:offset + 2], "big")
-        if segment_length < 2 or offset + segment_length > len(content):
-            return False
-        if marker in frame_markers:
-            if segment_length < 8:
-                return False
-            height = int.from_bytes(content[offset + 3:offset + 5], "big")
-            width = int.from_bytes(content[offset + 5:offset + 7], "big")
-            if width == 0 or height == 0:
-                return False
-            saw_frame = True
-        offset += segment_length
-    return False
-
-
 def validate_signature_content(upload: ValidatedUpload) -> None:
     content = upload.stream.getvalue()
-    valid = (
-        is_structurally_valid_png(content)
-        if upload.content_type == "image/png"
-        else is_structurally_valid_jpeg(content)
-    )
-    if not valid:
+    expected_format = {"image/png": "PNG", "image/jpeg": "JPEG"}[upload.content_type]
+    try:
+        if expected_format == "JPEG":
+            scan_marker = content.index(b"\xff\xda")
+            scan_header_length = int.from_bytes(
+                content[scan_marker + 2:scan_marker + 4], "big"
+            )
+            if scan_header_length < 2 or scan_marker + 2 + scan_header_length >= len(content) - 2:
+                raise ValueError("signature JPEG has no scan data")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(content)) as image:
+                if image.format != expected_format or image.width <= 0 or image.height <= 0:
+                    raise ValueError("signature image format mismatch")
+                image.verify()
+            with Image.open(BytesIO(content)) as decoded:
+                if decoded.format != expected_format or decoded.width <= 0 or decoded.height <= 0:
+                    raise ValueError("signature image format mismatch")
+                decoded.load()
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+        ValueError,
+    ):
         raise HTTPException(status_code=415, detail="签名图片内容无效")
 
 
@@ -570,6 +517,9 @@ async def upload_audio(
     db: Session = Depends(get_db),
 ):
     order = get_order_or_404(db, current_user.id, order_id)
+    if order.transcription_status == "processing" or order.transcription_claim_token is not None:
+        raise HTTPException(status_code=409, detail=SAFE_TRANSCRIPTION_CONFLICT)
+    old_object_key = order.audio_object_key
     upload = await read_validated_upload(file, AUDIO_TYPES, 20 * 1024 * 1024)
     storage = get_storage()
     storage_settings = get_storage_settings()
@@ -577,23 +527,52 @@ async def upload_audio(
         storage_settings.environment, current_user.id, order.id, "audio-pending", upload.suffix
     )
     storage.put(object_key, upload.stream, upload.content_type)
-    old_object_key = order.audio_object_key
-    order.audio_url = ""
-    order.audio_object_key = object_key
-    order.transcription_status = "not_started"
-    order.transcription_error = None
-    order.transcription_claim_token = None
-    order.asr_request_id = None
-    order.audio_duration_ms = None
-    order.audio_delete_after = None
     try:
-        add_audit(db, request, current_user, order.id, "audio_uploaded", "succeeded")
-        db.commit()
+        replaced = db.execute(
+            update(ServiceOrder)
+            .where(
+                ServiceOrder.id == order.id,
+                ServiceOrder.owner_user_id == current_user.id,
+                ServiceOrder.audio_object_key == old_object_key,
+                ServiceOrder.transcription_status != "processing",
+                ServiceOrder.transcription_claim_token.is_(None),
+            )
+            .values(
+                audio_url="",
+                audio_object_key=object_key,
+                transcription_status="not_started",
+                transcription_error=None,
+                transcription_claim_token=None,
+                asr_request_id=None,
+                audio_duration_ms=None,
+                audio_delete_after=None,
+                updated_at=datetime.now(timezone.utc),
+            )
+            .execution_options(synchronize_session=False)
+        )
     except Exception:
         db.rollback()
-        delete_or_enqueue(db, storage, object_key, "audio_upload_rollback")
-        raise
-    db.refresh(order)
+        delete_or_enqueue(db, storage, object_key, "audio_upload_precommit")
+        raise HTTPException(status_code=503, detail=SAFE_AUDIO_PERSISTENCE_ERROR) from None
+    if replaced.rowcount != 1:
+        db.rollback()
+        delete_or_enqueue(db, storage, object_key, "audio_upload_conflict")
+        raise HTTPException(status_code=409, detail=SAFE_TRANSCRIPTION_CONFLICT)
+    try:
+        add_audit(db, request, current_user, order.id, "audio_uploaded", "succeeded")
+        db.flush()
+    except Exception:
+        db.rollback()
+        delete_or_enqueue(db, storage, object_key, "audio_upload_precommit")
+        raise HTTPException(status_code=503, detail=SAFE_AUDIO_PERSISTENCE_ERROR) from None
+    try:
+        db.commit()
+    except Exception:
+        # The commit outcome is unknowable after a connection failure. Keep the
+        # pending object so either a committed canonical row or lifecycle expiry
+        # can resolve it without deleting canonical data.
+        db.rollback()
+        raise HTTPException(status_code=503, detail=SAFE_AUDIO_PERSISTENCE_ERROR) from None
     if old_object_key and old_object_key != object_key:
         delete_or_enqueue(db, storage, old_object_key, "audio_replacement")
     return AudioResponse(
@@ -738,40 +717,57 @@ def transcribe_order_audio(
                 updated_at=datetime.now(timezone.utc),
             )
         )
-        if completed.rowcount != 1:
-            db.rollback()
-            delete_or_enqueue(db, storage, target_key, "audio_transition_stale_target")
-            raise HTTPException(status_code=409, detail=SAFE_TRANSCRIPTION_CONFLICT)
-        db.add(StorageCleanupJob(object_key=source_key, source="audio_transition_source"))
-        add_audit(db, request, current_user, order.id, "transcription", "succeeded")
-        db.commit()
-    except HTTPException:
-        raise
     except Exception:
         db.rollback()
-        persisted = None
-        try:
-            persisted = db.get(ServiceOrder, order.id)
-        except Exception:
-            db.rollback()
-        if not (
-            persisted is not None
-            and persisted.audio_object_key == target_key
-            and persisted.transcription_status == "succeeded"
-            and persisted.transcription_claim_token is None
-        ):
-            delete_or_enqueue(db, storage, target_key, "audio_transition_terminal_rollback")
-            mark_transcription_claim_failed(
-                db,
-                request,
-                current_user,
-                order.id,
-                source_key,
-                claim_token,
-                SAFE_AUDIO_PERSISTENCE_ERROR,
-                "storage.audio_transition",
-            )
-            raise HTTPException(status_code=503, detail=SAFE_AUDIO_PERSISTENCE_ERROR) from None
+        delete_or_enqueue(db, storage, target_key, "audio_transition_precommit_target")
+        mark_transcription_claim_failed(
+            db,
+            request,
+            current_user,
+            order.id,
+            source_key,
+            claim_token,
+            SAFE_AUDIO_PERSISTENCE_ERROR,
+            "storage.audio_transition",
+        )
+        raise HTTPException(status_code=503, detail=SAFE_AUDIO_PERSISTENCE_ERROR) from None
+    if completed.rowcount != 1:
+        db.rollback()
+        delete_or_enqueue(db, storage, target_key, "audio_transition_stale_target")
+        raise HTTPException(status_code=409, detail=SAFE_TRANSCRIPTION_CONFLICT)
+    try:
+        db.add(StorageCleanupJob(object_key=source_key, source="audio_transition_source"))
+        add_audit(db, request, current_user, order.id, "transcription", "succeeded")
+        db.flush()
+    except Exception:
+        db.rollback()
+        delete_or_enqueue(db, storage, target_key, "audio_transition_precommit_target")
+        mark_transcription_claim_failed(
+            db,
+            request,
+            current_user,
+            order.id,
+            source_key,
+            claim_token,
+            SAFE_AUDIO_PERSISTENCE_ERROR,
+            "storage.audio_transition",
+        )
+        raise HTTPException(status_code=503, detail=SAFE_AUDIO_PERSISTENCE_ERROR) from None
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        mark_transcription_claim_failed(
+            db,
+            request,
+            current_user,
+            order.id,
+            source_key,
+            claim_token,
+            SAFE_AUDIO_PERSISTENCE_ERROR,
+            "storage.audio_transition",
+        )
+        raise HTTPException(status_code=503, detail=SAFE_AUDIO_PERSISTENCE_ERROR) from None
     try_committed_storage_cleanup(db, storage, source_key)
     return TranscriptionResponse(
         status="succeeded",
@@ -959,16 +955,33 @@ async def accept_service_order(
         delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
         raise HTTPException(status_code=503, detail="签名授权失败，请稍后重试") from None
 
+    acceptance_id = str(uuid4())
+    accepted_at = datetime.now(timezone.utc)
     acceptance = CustomerAcceptance(
+        id=acceptance_id,
         service_order_id=order.id,
         signature_object_key=object_key,
-        accepted_at=datetime.now(timezone.utc),
+        accepted_at=accepted_at,
     )
-    order.status = "accepted"
     try:
+        transitioned = db.execute(
+            update(ServiceOrder)
+            .where(
+                ServiceOrder.id == order.id,
+                ServiceOrder.owner_user_id == current_user.id,
+                ServiceOrder.status == "waiting_acceptance",
+            )
+            .values(status="accepted", updated_at=datetime.now(timezone.utc))
+        )
+        if transitioned.rowcount != 1:
+            db.rollback()
+            delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
+            raise HTTPException(status_code=409, detail="服务单状态已变更")
         db.add(acceptance)
         add_audit(db, request, current_user, order.id, "acceptance", "succeeded")
         db.commit()
+    except HTTPException:
+        raise
     except IntegrityError:
         db.rollback()
         delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
@@ -977,12 +990,11 @@ async def accept_service_order(
         db.rollback()
         delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
         raise
-    db.refresh(acceptance)
     return AcceptanceResponse(
         status="accepted",
         acceptance=AcceptanceMetadata(
-            id=acceptance.id,
-            accepted_at=acceptance.accepted_at,
+            id=acceptance_id,
+            accepted_at=accepted_at,
             signature_url=signature_url,
         ),
     )

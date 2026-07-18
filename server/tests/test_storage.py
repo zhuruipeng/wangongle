@@ -465,7 +465,7 @@ def test_photo_upload_rollback_delete_failure_enqueues_cleanup(
     assert jobs[0].last_error is None
 
 
-def test_audio_replace_keeps_old_object_and_row_when_commit_fails(
+def test_audio_replace_ambiguous_commit_keeps_old_row_and_both_pending_objects(
     client,
     auth_headers,
     create_order,
@@ -489,12 +489,14 @@ def test_audio_replace_keeps_old_object_and_row_when_commit_fails(
         f"/api/v1/service-orders/{order_id}/audio", headers=owner,
         files={"file": ("second.mp3", b"second-audio", "audio/mpeg")},
     )
-    assert second.status_code == 500
+    assert second.status_code == 503
+    assert second.json() == {"detail": "录音处理状态保存失败，请稍后重试"}
     monkeypatch.setattr(db_session, "commit", original_commit)
     db_session.expire_all()
     assert db_session.get(ServiceOrder, order_id).audio_object_key == old_key
     assert local_storage.exists(old_key)
-    assert len(list(local_storage.root.rglob("*.mp3"))) == 1
+    ambiguous_objects = list(local_storage.root.rglob("*.mp3"))
+    assert len(ambiguous_objects) == 2
 
     succeeded = client.post(
         f"/api/v1/service-orders/{order_id}/audio", headers=owner,
@@ -506,7 +508,7 @@ def test_audio_replace_keeps_old_object_and_row_when_commit_fails(
     assert new_key != old_key
     assert local_storage.exists(new_key)
     assert not local_storage.exists(old_key)
-    assert len(list(local_storage.root.rglob("*.mp3"))) == 1
+    assert len(list(local_storage.root.rglob("*.mp3"))) == 2
 
 
 def test_successful_audio_replacement_delete_failure_enqueues_cleanup(

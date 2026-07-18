@@ -1,9 +1,12 @@
 import base64
 from pathlib import Path
+import struct
 import time
 from urllib.parse import parse_qs, urlparse
+import zlib
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from server.models import CustomerAcceptance, ServiceOrder, StorageCleanupJob
@@ -27,16 +30,42 @@ def signature_png() -> bytes:
 @pytest.fixture
 def signature_jpeg() -> bytes:
     return base64.b64decode(
-        "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////"
-        "////////////////2wBDAf//////////////////////////////////////////////////////////////"
-        "////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAU"
-        "EAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgB"
-        "AQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAA"
-        "AP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAA"
-        "AAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgB"
-        "AwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAA"
-        "AP/aAAgBAQABPxB//9k="
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a"
+        "HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIy"
+        "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIA"
+        "AhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQA"
+        "AAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3"
+        "ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWm"
+        "p6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEA"
+        "AwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSEx"
+        "BhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElK"
+        "U1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3"
+        "uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iii"
+        "gD//2Q=="
     )
+
+
+@pytest.fixture
+def crc_valid_but_undecodable_png() -> bytes:
+    def chunk(chunk_type: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(chunk_type + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", checksum)
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", b"not-a-zlib-stream")
+        + chunk(b"IEND", b"")
+    )
+
+
+@pytest.fixture
+def malformed_jpeg_empty_scan(signature_jpeg: bytes) -> bytes:
+    start = signature_jpeg.index(b"\xff\xda")
+    segment_length = int.from_bytes(signature_jpeg[start + 2:start + 4], "big")
+    scan_data_start = start + 2 + segment_length
+    return signature_jpeg[:scan_data_start] + b"\xff\xd9"
 
 
 @pytest.fixture
@@ -201,6 +230,37 @@ def test_acceptance_rejects_arbitrary_bytes_with_image_name_and_mime(
     assert list(acceptance_storage.root.rglob("*.*")) == []
 
 
+@pytest.mark.parametrize(
+    ("fixture_name", "filename", "content_type"),
+    [
+        ("crc_valid_but_undecodable_png", "signature.png", "image/png"),
+        ("malformed_jpeg_empty_scan", "signature.jpg", "image/jpeg"),
+    ],
+)
+def test_acceptance_rejects_structured_but_undecodable_images(
+    client,
+    owner_order,
+    acceptance_storage: LocalStorage,
+    db_session: Session,
+    request: pytest.FixtureRequest,
+    fixture_name: str,
+    filename: str,
+    content_type: str,
+) -> None:
+    order_id, headers = owner_order()
+    response = post_acceptance(
+        client,
+        order_id,
+        headers,
+        request.getfixturevalue(fixture_name),
+        filename=filename,
+        content_type=content_type,
+    )
+    assert response.status_code == 415
+    assert db_session.query(CustomerAcceptance).filter_by(service_order_id=order_id).count() == 0
+    assert list(acceptance_storage.root.rglob("*.*")) == []
+
+
 def test_acceptance_rejects_signature_over_five_megabytes(
     client,
     owner_order,
@@ -344,3 +404,102 @@ def test_acceptance_presign_failure_compensates_before_db_commit(
     assert db_session.query(CustomerAcceptance).filter_by(service_order_id=order_id).count() == 0
     assert db_session.get(ServiceOrder, order_id).status == "waiting_acceptance"
     assert list(acceptance_storage.root.rglob("*.png")) == []
+
+
+def test_accepted_status_only_comes_from_acceptance_and_cannot_reopen(
+    client,
+    owner_order,
+    signature_png: bytes,
+    acceptance_storage: LocalStorage,
+    db_session: Session,
+) -> None:
+    del acceptance_storage
+    order_id, headers = owner_order()
+    direct = client.patch(
+        f"/api/v1/service-orders/{order_id}",
+        headers=headers,
+        json={"status": "accepted"},
+    )
+    assert direct.status_code == 422
+    assert db_session.get(ServiceOrder, order_id).status == "waiting_acceptance"
+    assert db_session.query(CustomerAcceptance).filter_by(service_order_id=order_id).count() == 0
+
+    accepted = post_acceptance(client, order_id, headers, signature_png)
+    assert accepted.status_code == 201
+    reopened = client.patch(
+        f"/api/v1/service-orders/{order_id}",
+        headers=headers,
+        json={"status": "draft"},
+    )
+    assert reopened.status_code == 409
+    db_session.expire_all()
+    assert db_session.get(ServiceOrder, order_id).status == "accepted"
+
+
+def test_order_cannot_be_created_as_already_accepted(
+    client,
+    auth_headers,
+) -> None:
+    from server.tests.data import ORDER_PAYLOAD
+
+    headers = auth_headers("create-accepted-forbidden")
+    response = client.post(
+        "/api/v1/service-orders",
+        headers=headers,
+        json={**ORDER_PAYLOAD, "status": "accepted"},
+    )
+    assert response.status_code == 422
+
+
+def test_acceptance_atomic_status_race_rolls_back_and_compensates_signature(
+    client,
+    owner_order,
+    signature_png: bytes,
+    acceptance_storage: LocalStorage,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_id, headers = owner_order()
+    original_presign = acceptance_storage.presigned_get_url
+
+    def cancel_before_terminal_update(key: str, expires: int) -> str:
+        with Session(bind=db_session.get_bind()) as competing:
+            competing.execute(
+                update(ServiceOrder)
+                .where(ServiceOrder.id == order_id)
+                .values(status="cancelled")
+            )
+            competing.commit()
+        return original_presign(key, expires)
+
+    monkeypatch.setattr(
+        acceptance_storage,
+        "presigned_get_url",
+        cancel_before_terminal_update,
+    )
+    response = post_acceptance(client, order_id, headers, signature_png)
+    assert response.status_code == 409
+    db_session.expire_all()
+    assert db_session.get(ServiceOrder, order_id).status == "cancelled"
+    assert db_session.query(CustomerAcceptance).filter_by(service_order_id=order_id).count() == 0
+    assert list(acceptance_storage.root.rglob("*.png")) == []
+
+
+def test_acceptance_success_does_not_refresh_after_commit(
+    client,
+    owner_order,
+    signature_png: bytes,
+    acceptance_storage: LocalStorage,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del acceptance_storage
+    order_id, headers = owner_order()
+    monkeypatch.setattr(
+        db_session,
+        "refresh",
+        lambda instance: (_ for _ in ()).throw(AssertionError("post-commit refresh forbidden")),
+    )
+    response = post_acceptance(client, order_id, headers, signature_png)
+    assert response.status_code == 201, response.text
+    assert response.json()["acceptance"]["id"]

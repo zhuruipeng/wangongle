@@ -11,3 +11,4 @@ psycopg[binary]==3.2.13
 redis==7.0.1
 PyJWT==2.13.0
 cos-python-sdk-v5==1.9.44
+Pillow==11.3.0

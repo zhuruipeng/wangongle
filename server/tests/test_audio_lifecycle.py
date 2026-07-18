@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from server.models import AuditEvent, ServiceOrder, StorageCleanupJob
@@ -313,7 +313,7 @@ def test_continuous_terminal_db_failure_keeps_source_and_stale_claim_can_recover
     assert lifecycle_storage.exists(source_key)
     assert lifecycle_storage.moves == []
     if lifecycle_storage.copies:
-        assert not lifecycle_storage.exists(lifecycle_storage.copies[0][1])
+        assert lifecycle_storage.exists(lifecycle_storage.copies[0][1])
 
     monkeypatch.setattr(db_session, "commit", original_commit)
     db_session.rollback()
@@ -330,15 +330,24 @@ def test_continuous_terminal_db_failure_keeps_source_and_stale_claim_can_recover
     assert recovered.json()["status"] == "succeeded"
 
 
-def test_replacement_audio_clears_previous_processing_claim(
+@pytest.mark.parametrize(
+    ("transcription_status", "claim_token"),
+    [("processing", "abandoned-claim"), ("failed", "unexpected-claim")],
+)
+def test_replacement_audio_rejects_any_processing_or_claim_including_stale(
     client,
     owner_order,
+    lifecycle_storage: TrackingStorage,
     db_session: Session,
+    transcription_status: str,
+    claim_token: str,
 ) -> None:
     order_id, headers = owner_order(audio=True)
     order = db_session.get(ServiceOrder, order_id)
-    order.transcription_status = "processing"
-    order.transcription_claim_token = "abandoned-claim"
+    source_key = order.audio_object_key
+    order.transcription_status = transcription_status
+    order.transcription_claim_token = claim_token
+    order.updated_at = datetime.now(timezone.utc) - timedelta(days=1)
     db_session.commit()
 
     response = client.post(
@@ -346,8 +355,167 @@ def test_replacement_audio_clears_previous_processing_claim(
         headers=headers,
         files={"file": ("replacement.mp3", b"ID3-replacement", "audio/mpeg")},
     )
-    assert response.status_code == 200
+    assert response.status_code == 409
     db_session.expire_all()
     replaced = db_session.get(ServiceOrder, order_id)
-    assert replaced.transcription_status == "not_started"
-    assert replaced.transcription_claim_token is None
+    assert replaced.audio_object_key == source_key
+    assert replaced.transcription_status == transcription_status
+    assert replaced.transcription_claim_token == claim_token
+    assert lifecycle_storage.exists(source_key)
+
+
+def test_audio_upload_loses_race_to_terminal_transition_without_overwrite_or_orphan(
+    client,
+    owner_order,
+    lifecycle_storage: TrackingStorage,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_id, headers = owner_order(audio=True)
+    current = db_session.get(ServiceOrder, order_id)
+    source_key = current.audio_object_key
+    target_key = build_object_key(
+        "test", current.owner_user_id, order_id, "audio-expiring", ".mp3"
+    )
+    delete_after = datetime.now(timezone.utc) + timedelta(days=7)
+    lifecycle_storage.put(target_key, __import__("io").BytesIO(b"canonical"), "audio/mpeg")
+    original_put = lifecycle_storage.put
+    replacement_keys: list[str] = []
+
+    def terminal_wins_after_replacement_put(key, stream, content_type) -> None:
+        original_put(key, stream, content_type)
+        replacement_keys.append(key)
+        with Session(db_session.get_bind()) as competitor:
+            result = competitor.execute(
+                update(ServiceOrder)
+                .where(
+                    ServiceOrder.id == order_id,
+                    ServiceOrder.audio_object_key == source_key,
+                )
+                .values(
+                    audio_object_key=target_key,
+                    audio_delete_after=delete_after,
+                    transcription_status="succeeded",
+                    transcription_claim_token=None,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            assert result.rowcount == 1
+            competitor.commit()
+
+    monkeypatch.setattr(lifecycle_storage, "put", terminal_wins_after_replacement_put)
+    response = client.post(
+        f"/api/v1/service-orders/{order_id}/audio",
+        headers=headers,
+        files={"file": ("replacement.mp3", b"ID3-replacement", "audio/mpeg")},
+    )
+
+    assert response.status_code == 409, response.text
+    db_session.expire_all()
+    persisted = db_session.get(ServiceOrder, order_id)
+    assert persisted.audio_object_key == target_key
+    assert persisted.transcription_status == "succeeded"
+    assert persisted.audio_delete_after == delete_after
+    assert lifecycle_storage.exists(target_key)
+    assert replacement_keys and not lifecycle_storage.exists(replacement_keys[0])
+
+
+def test_audio_upload_loses_race_to_transcription_claim_and_compensates_replacement(
+    client,
+    owner_order,
+    lifecycle_storage: TrackingStorage,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_id, headers = owner_order(audio=True)
+    current = db_session.get(ServiceOrder, order_id)
+    source_key = current.audio_object_key
+    original_put = lifecycle_storage.put
+    replacement_keys: list[str] = []
+
+    def claim_wins_after_replacement_put(key, stream, content_type) -> None:
+        original_put(key, stream, content_type)
+        replacement_keys.append(key)
+        with Session(db_session.get_bind()) as competitor:
+            result = competitor.execute(
+                update(ServiceOrder)
+                .where(
+                    ServiceOrder.id == order_id,
+                    ServiceOrder.audio_object_key == source_key,
+                )
+                .values(
+                    transcription_status="processing",
+                    transcription_claim_token="winning-worker",
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            assert result.rowcount == 1
+            competitor.commit()
+
+    monkeypatch.setattr(lifecycle_storage, "put", claim_wins_after_replacement_put)
+    response = client.post(
+        f"/api/v1/service-orders/{order_id}/audio",
+        headers=headers,
+        files={"file": ("replacement.mp3", b"ID3-replacement", "audio/mpeg")},
+    )
+
+    assert response.status_code == 409, response.text
+    db_session.expire_all()
+    persisted = db_session.get(ServiceOrder, order_id)
+    assert persisted.audio_object_key == source_key
+    assert persisted.transcription_status == "processing"
+    assert persisted.transcription_claim_token == "winning-worker"
+    assert lifecycle_storage.exists(source_key)
+    assert replacement_keys and not lifecycle_storage.exists(replacement_keys[0])
+
+
+def test_commit_succeeds_then_raises_never_compensates_canonical_target(
+    client,
+    owner_order,
+    lifecycle_storage: TrackingStorage,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_id, headers = owner_order(audio=True)
+    source_key = db_session.get(ServiceOrder, order_id).audio_object_key
+    monkeypatch.setattr("server.routers.orders.transcribe_audio", successful_asr)
+    original_commit = db_session.commit
+    original_get = db_session.get
+    commit_count = 0
+    verification_reads_fail = False
+
+    def commit_then_raise_connection_error() -> None:
+        nonlocal commit_count, verification_reads_fail
+        commit_count += 1
+        if commit_count == 2:
+            original_commit()
+            verification_reads_fail = True
+            raise ConnectionError("database outcome unknown")
+        original_commit()
+
+    def fail_verification_reads(model, identity):
+        if verification_reads_fail:
+            raise ConnectionError("verification unavailable")
+        return original_get(model, identity)
+
+    monkeypatch.setattr(db_session, "commit", commit_then_raise_connection_error)
+    monkeypatch.setattr(db_session, "get", fail_verification_reads)
+    response = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "录音处理状态保存失败，请稍后重试"}
+
+    monkeypatch.setattr(db_session, "commit", original_commit)
+    monkeypatch.setattr(db_session, "get", original_get)
+    db_session.rollback()
+    db_session.expire_all()
+    persisted = db_session.get(ServiceOrder, order_id)
+    target_key = lifecycle_storage.copies[0][1]
+    assert persisted.audio_object_key == target_key
+    assert persisted.transcription_status == "succeeded"
+    assert persisted.audio_delete_after is not None
+    assert lifecycle_storage.exists(source_key)
+    assert lifecycle_storage.exists(target_key)
+
+    assert retry_storage_cleanup(db_session, lifecycle_storage) == {"succeeded": 1, "failed": 0}
+    assert not lifecycle_storage.exists(source_key)
+    assert lifecycle_storage.exists(target_key)

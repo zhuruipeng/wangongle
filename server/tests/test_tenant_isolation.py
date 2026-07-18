@@ -1,3 +1,5 @@
+import base64
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,6 +17,9 @@ REPORT_PAYLOAD = {
     "total_amount_cents": 31000,
     "paid_amount_cents": 0,
 }
+SIGNATURE_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def test_every_order_route_requires_authentication(client, auth_headers, create_order) -> None:
@@ -24,7 +29,7 @@ def test_every_order_route_requires_authentication(client, auth_headers, create_
         client.post("/api/v1/service-orders", json=ORDER_PAYLOAD),
         client.get("/api/v1/service-orders"),
         client.get(f"/api/v1/service-orders/{order_id}"),
-        client.patch(f"/api/v1/service-orders/{order_id}", json={"status": "accepted"}),
+        client.patch(f"/api/v1/service-orders/{order_id}", json={"status": "cancelled"}),
         client.post(
             f"/api/v1/service-orders/{order_id}/photos",
             data={"phase": "before"},
@@ -65,7 +70,7 @@ def test_other_user_cannot_discover_or_mutate_order(client, auth_headers, create
         client.patch(
             f"/api/v1/service-orders/{order_id}",
             headers=stranger,
-            json={"status": "accepted"},
+            json={"status": "cancelled"},
         ),
         client.post(
             f"/api/v1/service-orders/{order_id}/photos",
@@ -199,9 +204,12 @@ def test_required_order_actions_write_minimal_audit_events(
     assert client.post(
         f"/api/v1/service-orders/{order_id}/submit-acceptance", headers=owner
     ).status_code == 200
-    assert client.patch(
-        f"/api/v1/service-orders/{order_id}", headers=owner, json={"status": "accepted"}
-    ).status_code == 200
+    assert client.post(
+        f"/api/v1/service-orders/{order_id}/acceptance",
+        headers=owner,
+        data={"accepted": "true"},
+        files={"signature": ("signature.png", SIGNATURE_PNG, "image/png")},
+    ).status_code == 201
 
     events = db_session.scalars(
         select(AuditEvent).where(AuditEvent.resource_id == order_id).order_by(AuditEvent.created_at)
