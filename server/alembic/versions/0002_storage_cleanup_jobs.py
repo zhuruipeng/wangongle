@@ -29,12 +29,6 @@ def upgrade() -> None:
         sa.UniqueConstraint("object_key"),
     )
     op.create_index(
-        "ix_storage_cleanup_jobs_object_key",
-        "storage_cleanup_jobs",
-        ["object_key"],
-        unique=False,
-    )
-    op.create_index(
         "ix_storage_cleanup_jobs_source",
         "storage_cleanup_jobs",
         ["source"],
@@ -44,5 +38,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_storage_cleanup_jobs_source", table_name="storage_cleanup_jobs")
-    op.drop_index("ix_storage_cleanup_jobs_object_key", table_name="storage_cleanup_jobs")
     op.drop_table("storage_cleanup_jobs")

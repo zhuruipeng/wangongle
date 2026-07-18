@@ -119,7 +119,7 @@ class StorageCleanupJob(Base):
     __tablename__ = "storage_cleanup_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    object_key: Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    object_key: Mapped[str] = mapped_column(String(512), unique=True)
     source: Mapped[str] = mapped_column(String(64), index=True)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)

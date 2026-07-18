@@ -19,14 +19,22 @@ def test_alembic_upgrades_empty_database(tmp_path, monkeypatch) -> None:
     url = f"sqlite:///{tmp_path / 'migration.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
     command.upgrade(Config("alembic.ini"), "head")
-    tables = set(inspect(create_engine(url)).get_table_names())
+    inspector = inspect(create_engine(url))
+    tables = set(inspector.get_table_names())
     assert {
         "users", "refresh_sessions", "service_orders", "service_order_photos",
         "customer_acceptances", "audit_events", "storage_cleanup_jobs",
     } <= tables
     cleanup_columns = {
-        column["name"] for column in inspect(create_engine(url)).get_columns("storage_cleanup_jobs")
+        column["name"] for column in inspector.get_columns("storage_cleanup_jobs")
     }
     assert {
         "id", "object_key", "source", "attempt_count", "last_error", "created_at", "updated_at"
     } <= cleanup_columns
+    unique_columns = {
+        tuple(constraint["column_names"])
+        for constraint in inspector.get_unique_constraints("storage_cleanup_jobs")
+    }
+    index_names = {index["name"] for index in inspector.get_indexes("storage_cleanup_jobs")}
+    assert ("object_key",) in unique_columns
+    assert "ix_storage_cleanup_jobs_object_key" not in index_names

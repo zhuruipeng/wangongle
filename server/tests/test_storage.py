@@ -451,6 +451,62 @@ def test_cleanup_retry_removes_success_and_retains_safe_failed_job(db_session: S
     assert db_session.query(StorageCleanupJob).count() == 0
 
 
+def test_cleanup_retry_does_not_starve_new_jobs_behind_poison_batch(
+    db_session: Session,
+) -> None:
+    from server.models import StorageCleanupJob
+    from server.storage.cleanup import retry_storage_cleanup
+
+    now = datetime.now(timezone.utc)
+    jobs = [
+        StorageCleanupJob(
+            object_key=f"production/poison-{index}",
+            source="photo_delete",
+            created_at=now + timedelta(seconds=index),
+            updated_at=now + timedelta(seconds=index),
+        )
+        for index in range(3)
+    ]
+    db_session.add_all(jobs)
+    db_session.commit()
+
+    class PoisonStorage:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def delete(self, key: str) -> None:
+            self.calls.append(key)
+            raise RuntimeError("still unavailable")
+
+    storage = PoisonStorage()
+    assert retry_storage_cleanup(db_session, storage, limit=2) == {"succeeded": 0, "failed": 2}
+    assert storage.calls == ["production/poison-0", "production/poison-1"]
+
+    storage.calls.clear()
+    assert retry_storage_cleanup(db_session, storage, limit=2) == {"succeeded": 0, "failed": 2}
+    assert "production/poison-2" in storage.calls
+
+    attempts_before = {job.object_key: job.attempt_count for job in db_session.query(StorageCleanupJob)}
+    storage.calls.clear()
+    assert retry_storage_cleanup(db_session, storage, limit=2) == {"succeeded": 0, "failed": 2}
+    attempts_after = {job.object_key: job.attempt_count for job in db_session.query(StorageCleanupJob)}
+    assert storage.calls
+    assert sum(attempts_after.values()) == sum(attempts_before.values()) + 2
+
+
+def test_cleanup_batch_uses_postgres_skip_locked_and_sqlite_compatible_sql() -> None:
+    from sqlalchemy.dialects import postgresql, sqlite
+
+    from server.storage.cleanup import storage_cleanup_batch_statement
+
+    statement = storage_cleanup_batch_statement(limit=10)
+    postgres_sql = str(statement.compile(dialect=postgresql.dialect()))
+    sqlite_sql = str(statement.compile(dialect=sqlite.dialect()))
+    assert "ORDER BY storage_cleanup_jobs.attempt_count" in postgres_sql
+    assert "FOR UPDATE SKIP LOCKED" in postgres_sql
+    assert "FOR UPDATE" not in sqlite_sql
+
+
 def _configured_report() -> AiReportSettings:
     return AiReportSettings(True, "key", "https://example.invalid", "test-model")
 

@@ -38,17 +38,26 @@ def delete_or_enqueue(
         enqueue_storage_cleanup(db, object_key, source)
 
 
+def storage_cleanup_batch_statement(limit: int):
+    return (
+        select(StorageCleanupJob)
+        .order_by(
+            StorageCleanupJob.attempt_count,
+            StorageCleanupJob.updated_at,
+            StorageCleanupJob.created_at,
+            StorageCleanupJob.id,
+        )
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+
+
 def retry_storage_cleanup(
     db: Session,
     storage: Any,
     limit: int = 100,
 ) -> dict[str, int]:
-    jobs = db.scalars(
-        select(StorageCleanupJob)
-        .order_by(StorageCleanupJob.created_at, StorageCleanupJob.id)
-        .limit(limit)
-        .with_for_update(skip_locked=True)
-    ).all()
+    jobs = db.scalars(storage_cleanup_batch_statement(limit)).all()
     succeeded = 0
     failed = 0
     for job in jobs:
