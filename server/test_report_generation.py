@@ -1,11 +1,16 @@
 import json
+import os
 from typing import Optional
 from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
-from server.main import app
+from server.database import Base, get_db
+from server.main import create_app
 from server.services.report_generator import (
     ReportGenerationError,
     generate_service_report,
@@ -14,7 +19,26 @@ from server.services.report_generator import (
 from server.settings import AiReportSettings
 
 
-client = TestClient(app)
+def build_test_client() -> TestClient:
+    os.environ["JWT_SECRET"] = "legacy-test-secret-that-is-long-enough"
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    application = create_app()
+    application.state.redis = None
+
+    def override_get_db():
+        with testing_session() as session:
+            yield session
+
+    application.dependency_overrides[get_db] = override_get_db
+    return TestClient(application)
+
+
 CONFIGURED = AiReportSettings(
     enabled=True,
     api_key="mock-api-key",
@@ -29,22 +53,38 @@ UNCONFIGURED = AiReportSettings(
 )
 
 
-def create_order(transcript: Optional[str]) -> str:
-    response = client.post("/api/v1/service-orders", json={
+def auth_headers(client: TestClient) -> dict[str, str]:
+    with patch(
+        "server.routers.auth.exchange_code",
+        return_value={"openid": f"report-{uuid4().hex}", "unionid": None},
+    ), patch("server.routers.auth.check_rate_limit", return_value=True):
+        auth = client.post("/api/v1/auth/wechat", json={"code": "report-code"})
+    assert auth.status_code == 200, auth.text
+    headers = {"Authorization": f"Bearer {auth.json()['access_token']}"}
+    profile = client.patch(
+        "/api/v1/auth/me/profile",
+        headers=headers,
+        json={"technician_name": "测试师傅"},
+    )
+    assert profile.status_code == 200, profile.text
+    return headers
+
+
+def create_order(client: TestClient, transcript: Optional[str], headers: dict[str, str]) -> str:
+    response = client.post("/api/v1/service-orders", headers=headers, json={
         "order_no": f"AI-{uuid4().hex[:12]}",
         "company_name": "测试公司",
         "customer_name": "测试客户",
         "customer_phone": "13800000000",
         "service_address": "测试地址",
         "service_type": "空调安装",
-        "technician_name": "测试师傅",
         "status": "in_progress",
     })
     assert response.status_code == 201, response.text
     order_id = response.json()["id"]
     if transcript is not None:
         response = client.patch(
-            f"/api/v1/service-orders/{order_id}", json={"transcript": transcript}
+            f"/api/v1/service-orders/{order_id}", headers=headers, json={"transcript": transcript}
         )
         assert response.status_code == 200, response.text
     return order_id
@@ -85,19 +125,21 @@ def expect_generation_error(raw_json: str, transcript: str) -> None:
 
 
 def run() -> None:
+    client = build_test_client()
+    headers = auth_headers(client)
     transcript = "完成空调安装，用了两米铜管，安装费一百五十元。"
     valid_json = json.dumps(report_payload(transcript), ensure_ascii=False)
 
     # 1. Valid JSON is strictly validated, recalculated, returned, and persisted.
-    order_id = create_order(transcript)
+    order_id = create_order(client, transcript, headers)
     generated = validate_and_recalculate(valid_json, transcript)
-    with patch("server.main.get_ai_report_settings", return_value=CONFIGURED), patch(
-        "server.main.generate_service_report", return_value=generated
+    with patch("server.routers.orders.get_ai_report_settings", return_value=CONFIGURED), patch(
+        "server.routers.orders.generate_service_report", return_value=generated
     ):
-        response = client.post(f"/api/v1/service-orders/{order_id}/generate-report")
+        response = client.post(f"/api/v1/service-orders/{order_id}/generate-report", headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["total_amount_cents"] == 15000
-    detail = client.get(f"/api/v1/service-orders/{order_id}").json()
+    detail = client.get(f"/api/v1/service-orders/{order_id}", headers=headers).json()
     assert detail["report_generation_status"] == "succeeded"
     assert detail["generated_report"]["materials"][0]["amount_cents"] is None
     assert detail["report_model"] == "qwen3.5-plus-2026-02-15"
@@ -113,14 +155,14 @@ def run() -> None:
         else:
             raise AssertionError("invalid JSON should fail")
     assert request_mock.call_count == 2
-    invalid_id = create_order(transcript)
-    with patch("server.main.get_ai_report_settings", return_value=CONFIGURED), patch(
-        "server.main.generate_service_report",
+    invalid_id = create_order(client, transcript, headers)
+    with patch("server.routers.orders.get_ai_report_settings", return_value=CONFIGURED), patch(
+        "server.routers.orders.generate_service_report",
         side_effect=ReportGenerationError("模型未返回有效JSON"),
     ):
-        response = client.post(f"/api/v1/service-orders/{invalid_id}/generate-report")
+        response = client.post(f"/api/v1/service-orders/{invalid_id}/generate-report", headers=headers)
     assert response.status_code == 502
-    assert client.get(f"/api/v1/service-orders/{invalid_id}").json()["report_generation_status"] == "failed"
+    assert client.get(f"/api/v1/service-orders/{invalid_id}", headers=headers).json()["report_generation_status"] == "failed"
 
     # 3. Missing/extra fields and content without a transcript source are rejected.
     missing = report_payload(transcript)
@@ -134,16 +176,16 @@ def run() -> None:
     expect_generation_error(json.dumps(fabricated, ensure_ascii=False), transcript)
 
     # 4. Missing API key keeps the server healthy and returns a readable error.
-    unconfigured_id = create_order(transcript)
-    with patch("server.main.get_ai_report_settings", return_value=UNCONFIGURED):
-        response = client.post(f"/api/v1/service-orders/{unconfigured_id}/generate-report")
+    unconfigured_id = create_order(client, transcript, headers)
+    with patch("server.routers.orders.get_ai_report_settings", return_value=UNCONFIGURED):
+        response = client.post(f"/api/v1/service-orders/{unconfigured_id}/generate-report", headers=headers)
     assert response.status_code == 503
     assert "AI" in response.json()["detail"]
     assert client.get("/api/health").status_code == 200
 
     # 5. Empty transcript is rejected before attempting a provider call.
-    empty_id = create_order(None)
-    response = client.post(f"/api/v1/service-orders/{empty_id}/generate-report")
+    empty_id = create_order(client, None, headers)
+    response = client.post(f"/api/v1/service-orders/{empty_id}/generate-report", headers=headers)
     assert response.status_code == 400
 
     # 6. Unknown material price remains null and is never estimated into the total.
@@ -153,6 +195,10 @@ def run() -> None:
     assert no_price.total_amount_cents == 15000
 
     print("AI report tests passed: success, invalid JSON/schema/source, unconfigured, empty transcript, no estimation")
+
+
+def test_report_generation_workflow() -> None:
+    run()
 
 
 if __name__ == "__main__":

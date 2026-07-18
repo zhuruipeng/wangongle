@@ -13,7 +13,6 @@ class ServiceOrderCreate(BaseModel):
     customer_phone: str = Field(min_length=1, max_length=50)
     service_address: str = Field(min_length=1, max_length=500)
     service_type: str = Field(min_length=1, max_length=300)
-    technician_name: str = Field(min_length=1, max_length=100)
     status: OrderStatus = "draft"
 
 
@@ -23,7 +22,6 @@ class ServiceOrderPatch(BaseModel):
     customer_phone: Optional[str] = Field(default=None, min_length=1, max_length=50)
     service_address: Optional[str] = Field(default=None, min_length=1, max_length=500)
     service_type: Optional[str] = Field(default=None, min_length=1, max_length=300)
-    technician_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     status: Optional[OrderStatus] = None
     transcript: Optional[str] = Field(default=None, max_length=10000)
 
