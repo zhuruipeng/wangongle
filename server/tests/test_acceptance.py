@@ -1,3 +1,4 @@
+import base64
 from pathlib import Path
 import time
 from urllib.parse import parse_qs, urlparse
@@ -18,7 +19,24 @@ def acceptance_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Local
 
 @pytest.fixture
 def signature_png() -> bytes:
-    return b"\x89PNG\r\n\x1a\n" + b"persisted-signature"
+    return base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
+
+@pytest.fixture
+def signature_jpeg() -> bytes:
+    return base64.b64decode(
+        "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////"
+        "////////////////2wBDAf//////////////////////////////////////////////////////////////"
+        "////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAU"
+        "EAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgB"
+        "AQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAA"
+        "AP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAA"
+        "AAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgB"
+        "AwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAA"
+        "AP/aAAgBAQABPxB//9k="
+    )
 
 
 @pytest.fixture
@@ -101,21 +119,20 @@ def test_acceptance_requires_true_checkbox_and_waiting_state(
 
 
 @pytest.mark.parametrize(
-    ("filename", "content_type", "expected_status"),
+    ("fixture_name", "filename", "content_type"),
     [
-        ("signature.jpg", "image/jpeg", 201),
-        ("signature.gif", "image/gif", 415),
-        ("signature.png", "image/jpeg", 415),
-        ("signature.exe", "image/png", 415),
+        ("signature_png", "signature.png", "image/png"),
+        ("signature_jpeg", "signature.jpg", "image/jpeg"),
     ],
 )
-def test_acceptance_allows_only_png_and_jpeg(
+def test_acceptance_accepts_structurally_valid_png_and_jpeg(
     client,
     owner_order,
     acceptance_storage: LocalStorage,
+    request: pytest.FixtureRequest,
+    fixture_name: str,
     filename: str,
     content_type: str,
-    expected_status: int,
 ) -> None:
     del acceptance_storage
     order_id, headers = owner_order()
@@ -123,11 +140,65 @@ def test_acceptance_allows_only_png_and_jpeg(
         client,
         order_id,
         headers,
-        b"signature-bytes",
+        request.getfixturevalue(fixture_name),
         filename=filename,
         content_type=content_type,
     )
-    assert response.status_code == expected_status, response.text
+    assert response.status_code == 201, response.text
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [
+        ("signature.gif", "image/gif"),
+        ("signature.png", "image/jpeg"),
+        ("signature.exe", "image/png"),
+    ],
+)
+def test_acceptance_rejects_mime_extension_mismatch_and_unsupported_types(
+    client,
+    owner_order,
+    acceptance_storage: LocalStorage,
+    filename: str,
+    content_type: str,
+) -> None:
+    order_id, headers = owner_order()
+    response = post_acceptance(
+        client,
+        order_id,
+        headers,
+        b"not-an-image",
+        filename=filename,
+        content_type=content_type,
+    )
+    assert response.status_code == 415
+    assert list(acceptance_storage.root.rglob("*.*")) == []
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [("signature.png", "image/png"), ("signature.jpg", "image/jpeg")],
+)
+def test_acceptance_rejects_arbitrary_bytes_with_image_name_and_mime(
+    client,
+    owner_order,
+    acceptance_storage: LocalStorage,
+    db_session: Session,
+    filename: str,
+    content_type: str,
+) -> None:
+    order_id, headers = owner_order()
+    response = post_acceptance(
+        client,
+        order_id,
+        headers,
+        b"arbitrary-signature-bytes",
+        filename=filename,
+        content_type=content_type,
+    )
+    assert response.status_code == 415
+    assert db_session.query(CustomerAcceptance).filter_by(service_order_id=order_id).count() == 0
+    assert list(acceptance_storage.root.rglob("*.*")) == []
 
 
 def test_acceptance_rejects_signature_over_five_megabytes(
@@ -247,3 +318,29 @@ def test_acceptance_partial_upload_failure_uses_cleanup_outbox(
     job = db_session.query(StorageCleanupJob).one()
     assert job.source == "acceptance_upload_rollback"
     assert f"/orders/{order_id}/signatures/" in job.object_key
+
+
+def test_acceptance_presign_failure_compensates_before_db_commit(
+    client,
+    owner_order,
+    signature_png: bytes,
+    acceptance_storage: LocalStorage,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_id, headers = owner_order()
+    monkeypatch.setattr(
+        acceptance_storage,
+        "presigned_get_url",
+        lambda key, expires: (_ for _ in ()).throw(
+            RuntimeError("presign provider credential must not leak")
+        ),
+    )
+    response = post_acceptance(client, order_id, headers, signature_png)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "签名授权失败，请稍后重试"}
+    assert "credential" not in response.text
+    db_session.expire_all()
+    assert db_session.query(CustomerAcceptance).filter_by(service_order_id=order_id).count() == 0
+    assert db_session.get(ServiceOrder, order_id).status == "waiting_acceptance"
+    assert list(acceptance_storage.root.rglob("*.png")) == []

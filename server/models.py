@@ -62,6 +62,7 @@ class ServiceOrder(Base):
     asr_request_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     audio_duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     audio_delete_after: Mapped[Optional[datetime]] = mapped_column(UTCDateTime(), nullable=True)
+    transcription_claim_token: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     report_generation_status: Mapped[str] = mapped_column(String(32), default="not_started")
     report_generation_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     report_model: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)

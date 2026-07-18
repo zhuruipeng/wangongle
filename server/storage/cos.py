@@ -38,7 +38,7 @@ class CosStorage:
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.settings.cos_bucket, Key=key)
 
-    def move(self, source_key: str, target_key: str) -> None:
+    def copy(self, source_key: str, target_key: str) -> None:
         self.client.copy_object(
             Bucket=self.settings.cos_bucket,
             Key=target_key,
@@ -49,6 +49,9 @@ class CosStorage:
             },
             ACL="private",
         )
+
+    def move(self, source_key: str, target_key: str) -> None:
+        self.copy(source_key, target_key)
         self.delete(source_key)
 
     def presigned_get_url(self, key: str, expires_seconds: int) -> str:

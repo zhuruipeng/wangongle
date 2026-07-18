@@ -38,6 +38,23 @@ def delete_or_enqueue(
         enqueue_storage_cleanup(db, object_key, source)
 
 
+def try_committed_storage_cleanup(db: Session, storage: Any, object_key: str) -> None:
+    """Best-effort a cleanup job that was committed with its owning DB transition."""
+    try:
+        storage.delete(object_key)
+    except Exception:
+        return
+    try:
+        job = db.scalar(
+            select(StorageCleanupJob).where(StorageCleanupJob.object_key == object_key)
+        )
+        if job is not None:
+            db.delete(job)
+            db.commit()
+    except Exception:
+        db.rollback()
+
+
 def storage_cleanup_batch_statement(limit: int):
     return (
         select(StorageCleanupJob)

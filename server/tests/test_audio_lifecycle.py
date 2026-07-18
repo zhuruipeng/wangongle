@@ -5,30 +5,40 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from server.models import AuditEvent, ServiceOrder
+from server.models import AuditEvent, ServiceOrder, StorageCleanupJob
 from server.services.speech_to_text import SpeechToTextError
 from server.services.tencent_asr import TencentAsrResult
 from server.settings import AsrSettings
-from server.storage import LocalStorage
+from server.storage import LocalStorage, build_object_key
+from server.storage.cleanup import retry_storage_cleanup
 
 
 CONFIGURED_ASR = AsrSettings(True, "id", "key", "ap-shanghai", "16k_zh", "")
+SAFE_DUPLICATE = {"detail": "录音正在处理或已完成转写"}
 
 
 class TrackingStorage(LocalStorage):
     def __init__(self, root: Path) -> None:
         super().__init__(root, signing_secret="audio-lifecycle-test-secret")
+        self.copies: list[tuple[str, str]] = []
         self.moves: list[tuple[str, str]] = []
-        self.fail_move = False
-        self.fail_reverse_move = False
+        self.partial_copy_failure = False
+        self.fail_pending_delete = False
+
+    def copy(self, source_key: str, target_key: str) -> None:
+        self.copies.append((source_key, target_key))
+        super().copy(source_key, target_key)
+        if self.partial_copy_failure:
+            raise RuntimeError("copy provider credential must not leak")
 
     def move(self, source_key: str, target_key: str) -> None:
         self.moves.append((source_key, target_key))
-        if self.fail_move:
-            raise RuntimeError("provider credential must not leak")
-        if self.fail_reverse_move and "/audio-expiring/" in f"/{source_key}":
-            raise RuntimeError("reverse provider credential must not leak")
         super().move(source_key, target_key)
+
+    def delete(self, key: str) -> None:
+        if self.fail_pending_delete and "/audio-pending/" in f"/{key}":
+            raise RuntimeError("delete provider credential must not leak")
+        super().delete(key)
 
 
 @pytest.fixture
@@ -64,7 +74,7 @@ def successful_asr(_path: Path, _settings: AsrSettings) -> TencentAsrResult:
     return TencentAsrResult("完成空调安装", "asr-request", 1200)
 
 
-def test_transcription_moves_audio_to_expiring_prefix_and_sets_deadline(
+def test_transcription_copies_then_commits_cleanup_job_and_expiry(
     client,
     owner_order,
     lifecycle_storage: TrackingStorage,
@@ -72,24 +82,48 @@ def test_transcription_moves_audio_to_expiring_prefix_and_sets_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order_id, headers = owner_order(audio=True)
+    source_key = db_session.get(ServiceOrder, order_id).audio_object_key
+    lifecycle_storage.fail_pending_delete = True
     before = datetime.now(timezone.utc)
-    monkeypatch.setattr("server.routers.orders.transcribe_audio", successful_asr)
+    observed_claims: list[str] = []
 
+    def assert_claim(path: Path, settings: AsrSettings) -> TencentAsrResult:
+        del path, settings
+        db_session.expire_all()
+        processing = db_session.get(ServiceOrder, order_id)
+        assert processing.transcription_status == "processing"
+        assert processing.transcription_claim_token
+        observed_claims.append(processing.transcription_claim_token)
+        return successful_asr(Path("unused"), CONFIGURED_ASR)
+
+    monkeypatch.setattr("server.routers.orders.transcribe_audio", assert_claim)
     response = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
 
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "succeeded"
-    source, target = lifecycle_storage.moves[0]
-    assert "/audio-pending/" in f"/{source}"
+    assert observed_claims
+    assert lifecycle_storage.moves == []
+    copied_source, target = lifecycle_storage.copies[0]
+    assert copied_source == source_key
+    assert "/audio-pending/" in f"/{copied_source}"
     assert "/audio-expiring/" in f"/{target}"
-    assert not lifecycle_storage.exists(source)
+    assert lifecycle_storage.exists(source_key)
     assert lifecycle_storage.exists(target)
+    db_session.expire_all()
     order = db_session.get(ServiceOrder, order_id)
-    assert order is not None
     assert order.audio_object_key == target
-    assert order.audio_delete_after is not None
+    assert order.transcription_status == "succeeded"
+    assert order.transcription_claim_token is None
     assert order.audio_delete_after.tzinfo is not None
     assert before + timedelta(days=7) <= order.audio_delete_after <= datetime.now(timezone.utc) + timedelta(days=7)
+    job = db_session.scalar(select(StorageCleanupJob).where(StorageCleanupJob.object_key == source_key))
+    assert job is not None
+    assert job.source == "audio_transition_source"
+
+    lifecycle_storage.fail_pending_delete = False
+    assert retry_storage_cleanup(db_session, lifecycle_storage) == {"succeeded": 1, "failed": 0}
+    assert not lifecycle_storage.exists(source_key)
+    assert lifecycle_storage.exists(target)
 
 
 def test_transcription_temporary_download_is_deleted(
@@ -110,10 +144,8 @@ def test_transcription_temporary_download_is_deleted(
 
     monkeypatch.setattr("server.routers.orders.transcribe_audio", inspect_path)
     response = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
-
     assert response.status_code == 200, response.text
-    assert downloaded_path
-    assert not downloaded_path[0].exists()
+    assert downloaded_path and not downloaded_path[0].exists()
     assert not downloaded_path[0].parent.exists()
 
 
@@ -130,13 +162,13 @@ def test_failed_recognition_leaves_pending_audio_retryable(
         "server.routers.orders.transcribe_audio",
         lambda path, settings: (_ for _ in ()).throw(SpeechToTextError("识别失败")),
     )
-
     failed = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
-
     assert failed.status_code == 200
     assert failed.json()["status"] == "failed"
+    assert lifecycle_storage.copies == []
     assert lifecycle_storage.moves == []
     assert lifecycle_storage.exists(pending_key)
+    db_session.expire_all()
     assert db_session.get(ServiceOrder, order_id).audio_object_key == pending_key
 
     monkeypatch.setattr("server.routers.orders.transcribe_audio", successful_asr)
@@ -145,7 +177,51 @@ def test_failed_recognition_leaves_pending_audio_retryable(
     assert retried.json()["status"] == "succeeded"
 
 
-def test_failed_storage_move_preserves_pending_source_and_uses_safe_error(
+@pytest.mark.parametrize("state", ["processing", "succeeded"])
+def test_duplicate_transcription_state_returns_fixed_conflict_without_asr(
+    client,
+    owner_order,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+) -> None:
+    order_id, headers = owner_order(audio=True)
+    order = db_session.get(ServiceOrder, order_id)
+    order.transcription_status = state
+    db_session.commit()
+    monkeypatch.setattr(
+        "server.routers.orders.transcribe_audio",
+        lambda path, settings: (_ for _ in ()).throw(AssertionError("ASR must not run")),
+    )
+    response = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
+    assert response.status_code == 409, response.text
+    assert response.json() == SAFE_DUPLICATE
+
+
+def test_expiring_audio_key_is_never_retranscribed(
+    client,
+    owner_order,
+    lifecycle_storage: TrackingStorage,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_id, headers = owner_order()
+    order = db_session.get(ServiceOrder, order_id)
+    expiring_key = build_object_key("test", order.owner_user_id, order_id, "audio-expiring", ".mp3")
+    lifecycle_storage.put(expiring_key, __import__("io").BytesIO(b"audio"), "audio/mpeg")
+    order.audio_object_key = expiring_key
+    order.transcription_status = "failed"
+    db_session.commit()
+    monkeypatch.setattr(
+        "server.routers.orders.transcribe_audio",
+        lambda path, settings: (_ for _ in ()).throw(AssertionError("ASR must not run")),
+    )
+    response = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
+    assert response.status_code == 409
+    assert response.json() == SAFE_DUPLICATE
+
+
+def test_partial_copy_exception_keeps_pending_source_and_compensates_target(
     client,
     owner_order,
     lifecycle_storage: TrackingStorage,
@@ -153,148 +229,125 @@ def test_failed_storage_move_preserves_pending_source_and_uses_safe_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order_id, headers = owner_order(audio=True)
-    pending_key = db_session.get(ServiceOrder, order_id).audio_object_key
-    lifecycle_storage.fail_move = True
+    source_key = db_session.get(ServiceOrder, order_id).audio_object_key
+    lifecycle_storage.partial_copy_failure = True
     monkeypatch.setattr("server.routers.orders.transcribe_audio", successful_asr)
-
     response = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
-
     assert response.status_code == 503
-    assert "provider credential" not in response.text
+    assert "credential" not in response.text
     db_session.expire_all()
     order = db_session.get(ServiceOrder, order_id)
-    assert order.audio_object_key == pending_key
+    assert order.audio_object_key == source_key
     assert order.audio_delete_after is None
     assert order.transcription_status == "failed"
-    assert lifecycle_storage.exists(pending_key)
-    assert not lifecycle_storage.exists(lifecycle_storage.moves[0][1])
-    audit = db_session.scalar(
-        select(AuditEvent).where(
-            AuditEvent.resource_id == order_id,
-            AuditEvent.event_type == "storage.audio_transition",
-        )
-    )
+    assert lifecycle_storage.exists(source_key)
+    target_key = lifecycle_storage.copies[0][1]
+    assert not lifecycle_storage.exists(target_key)
+    assert lifecycle_storage.moves == []
+    audit = db_session.scalar(select(AuditEvent).where(
+        AuditEvent.resource_id == order_id,
+        AuditEvent.event_type == "storage.audio_transition",
+        AuditEvent.outcome == "failed",
+    ))
     assert audit is not None
-    assert audit.outcome == "failed"
 
 
-def test_uploading_new_audio_clears_previous_expiry_deadline(
+def test_claim_fencing_rejects_stale_worker_result_and_keeps_source(
     client,
     owner_order,
     lifecycle_storage: TrackingStorage,
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    del lifecycle_storage
     order_id, headers = owner_order(audio=True)
-    monkeypatch.setattr("server.routers.orders.transcribe_audio", successful_asr)
-    assert client.post(
-        f"/api/v1/service-orders/{order_id}/transcribe", headers=headers
-    ).status_code == 200
-    assert db_session.get(ServiceOrder, order_id).audio_delete_after is not None
+    source_key = db_session.get(ServiceOrder, order_id).audio_object_key
 
-    replacement = client.post(
+    def supersede_claim(path: Path, settings: AsrSettings) -> TencentAsrResult:
+        del path, settings
+        db_session.expire_all()
+        order = db_session.get(ServiceOrder, order_id)
+        order.transcription_claim_token = "newer-worker-claim"
+        order.updated_at = datetime.now(timezone.utc)
+        db_session.commit()
+        return successful_asr(Path("unused"), CONFIGURED_ASR)
+
+    monkeypatch.setattr("server.routers.orders.transcribe_audio", supersede_claim)
+    response = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
+    assert response.status_code == 409
+    assert response.json() == SAFE_DUPLICATE
+    db_session.expire_all()
+    order = db_session.get(ServiceOrder, order_id)
+    assert order.audio_object_key == source_key
+    assert order.transcription_status == "processing"
+    assert order.transcription_claim_token == "newer-worker-claim"
+    assert lifecycle_storage.exists(source_key)
+    assert not lifecycle_storage.exists(lifecycle_storage.copies[0][1])
+    assert lifecycle_storage.moves == []
+
+
+def test_continuous_terminal_db_failure_keeps_source_and_stale_claim_can_recover(
+    client,
+    owner_order,
+    lifecycle_storage: TrackingStorage,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_id, headers = owner_order(audio=True)
+    source_key = db_session.get(ServiceOrder, order_id).audio_object_key
+    monkeypatch.setattr("server.routers.orders.transcribe_audio", successful_asr)
+    original_commit = db_session.commit
+    commit_count = 0
+
+    def fail_terminal_and_recovery_commits() -> None:
+        nonlocal commit_count
+        commit_count += 1
+        if commit_count in {2, 3}:
+            raise RuntimeError("database credential must not leak")
+        original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_terminal_and_recovery_commits)
+    response = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "录音处理状态保存失败，请稍后重试"}
+    assert "credential" not in response.text
+    assert lifecycle_storage.exists(source_key)
+    assert lifecycle_storage.moves == []
+    if lifecycle_storage.copies:
+        assert not lifecycle_storage.exists(lifecycle_storage.copies[0][1])
+
+    monkeypatch.setattr(db_session, "commit", original_commit)
+    db_session.rollback()
+    db_session.expire_all()
+    stranded = db_session.get(ServiceOrder, order_id)
+    assert stranded.audio_object_key == source_key
+    assert stranded.transcription_status == "processing"
+    assert stranded.transcription_claim_token
+    stranded.updated_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    original_commit()
+
+    recovered = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["status"] == "succeeded"
+
+
+def test_replacement_audio_clears_previous_processing_claim(
+    client,
+    owner_order,
+    db_session: Session,
+) -> None:
+    order_id, headers = owner_order(audio=True)
+    order = db_session.get(ServiceOrder, order_id)
+    order.transcription_status = "processing"
+    order.transcription_claim_token = "abandoned-claim"
+    db_session.commit()
+
+    response = client.post(
         f"/api/v1/service-orders/{order_id}/audio",
         headers=headers,
         files={"file": ("replacement.mp3", b"ID3-replacement", "audio/mpeg")},
     )
-
-    assert replacement.status_code == 200
-    assert db_session.get(ServiceOrder, order_id).audio_delete_after is None
-
-
-def test_db_failure_after_move_restores_pending_audio_for_retry(
-    client,
-    owner_order,
-    lifecycle_storage: TrackingStorage,
-    db_session: Session,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    order_id, headers = owner_order(audio=True)
-    pending_key = db_session.get(ServiceOrder, order_id).audio_object_key
-    downloaded_path: list[Path] = []
-
-    def capture_download(path: Path, settings: AsrSettings) -> TencentAsrResult:
-        del settings
-        downloaded_path.append(path)
-        return TencentAsrResult("完成空调安装", "asr-request", 1200)
-
-    monkeypatch.setattr("server.routers.orders.transcribe_audio", capture_download)
-    original_commit = db_session.commit
-    commit_count = 0
-
-    def fail_final_commit_once() -> None:
-        nonlocal commit_count
-        commit_count += 1
-        if commit_count == 2:
-            raise RuntimeError("database credential must not leak")
-        original_commit()
-
-    monkeypatch.setattr(db_session, "commit", fail_final_commit_once)
-    response = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
-
-    assert response.status_code == 503
-    assert response.json() == {"detail": "录音处理状态保存失败，请稍后重试"}
-    assert "credential" not in response.text
+    assert response.status_code == 200
     db_session.expire_all()
-    order = db_session.get(ServiceOrder, order_id)
-    assert order.audio_object_key == pending_key
-    assert order.audio_delete_after is None
-    assert order.transcription_status == "failed"
-    assert lifecycle_storage.exists(pending_key)
-    expiring_key = lifecycle_storage.moves[0][1]
-    assert not lifecycle_storage.exists(expiring_key)
-    assert lifecycle_storage.moves[-1] == (expiring_key, pending_key)
-    assert downloaded_path and not downloaded_path[0].exists()
-    assert not downloaded_path[0].parent.exists()
-
-    monkeypatch.setattr(db_session, "commit", original_commit)
-    retried = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
-    assert retried.status_code == 200
-    assert retried.json()["status"] == "succeeded"
-
-
-def test_reverse_move_failure_persists_target_recovery_key_and_safe_audit(
-    client,
-    owner_order,
-    lifecycle_storage: TrackingStorage,
-    db_session: Session,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    order_id, headers = owner_order(audio=True)
-    pending_key = db_session.get(ServiceOrder, order_id).audio_object_key
-    lifecycle_storage.fail_reverse_move = True
-    monkeypatch.setattr("server.routers.orders.transcribe_audio", successful_asr)
-    original_commit = db_session.commit
-    commit_count = 0
-
-    def fail_final_commit_once() -> None:
-        nonlocal commit_count
-        commit_count += 1
-        if commit_count == 2:
-            raise RuntimeError("database credential must not leak")
-        original_commit()
-
-    monkeypatch.setattr(db_session, "commit", fail_final_commit_once)
-    response = client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=headers)
-
-    assert response.status_code == 503
-    assert response.json() == {"detail": "录音处理状态保存失败，请稍后重试"}
-    assert "credential" not in response.text
-    db_session.expire_all()
-    order = db_session.get(ServiceOrder, order_id)
-    expiring_key = lifecycle_storage.moves[0][1]
-    assert order.audio_object_key == expiring_key
-    assert order.audio_object_key != pending_key
-    assert order.audio_delete_after is not None
-    assert order.transcription_status == "failed"
-    assert not lifecycle_storage.exists(pending_key)
-    assert lifecycle_storage.exists(expiring_key)
-    audit = db_session.scalar(
-        select(AuditEvent).where(
-            AuditEvent.resource_id == order_id,
-            AuditEvent.event_type == "storage.audio_transition",
-            AuditEvent.outcome == "failed",
-        )
-    )
-    assert audit is not None
+    replaced = db_session.get(ServiceOrder, order_id)
+    assert replaced.transcription_status == "not_started"
+    assert replaced.transcription_claim_token is None

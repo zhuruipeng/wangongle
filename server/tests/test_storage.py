@@ -54,6 +54,10 @@ def test_local_storage_round_trip(tmp_path: Path) -> None:
     storage = LocalStorage(tmp_path)
     key = "development/users/u1/orders/o1/photos/a.jpg"
     storage.put(key, BytesIO(b"image"), "image/jpeg")
+    copied_key = "development/users/u1/orders/o1/signatures/copied.jpg"
+    storage.copy(key, copied_key)
+    assert storage.exists(key)
+    assert storage.exists(copied_key)
     target = tmp_path / "download.jpg"
     storage.download_to(key, target)
     assert target.read_bytes() == b"image"
@@ -252,6 +256,7 @@ def test_cos_storage_uses_private_put_copy_delete_and_presigned_get(tmp_path: Pa
     storage = CosStorage(settings, client=client)
     storage.put("production/a.jpg", BytesIO(b"image"), "image/jpeg")
     storage.download_to("production/a.jpg", tmp_path / "download.jpg")
+    storage.copy("production/a.jpg", "production/copied.jpg")
     storage.move("production/a.jpg", "production/b.jpg")
     assert storage.presigned_get_url("production/b.jpg", 120) == "https://private.example/signed"
 
@@ -263,6 +268,11 @@ def test_cos_storage_uses_private_put_copy_delete_and_presigned_get(tmp_path: Pa
         ("download", {
             "Bucket": "private-123", "Key": "production/a.jpg",
             "DestFilePath": str(tmp_path / "download.jpg"),
+        }),
+        ("copy", {
+            "Bucket": "private-123", "Key": "production/copied.jpg",
+            "CopySource": {"Bucket": "private-123", "Key": "production/a.jpg", "Region": "ap-shanghai"},
+            "ACL": "private",
         }),
         ("copy", {
             "Bucket": "private-123", "Key": "production/b.jpg",
@@ -288,6 +298,15 @@ def test_cos_move_does_not_delete_when_copy_fails(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="copy failed"):
         storage.move("source", "target")
     assert not any(name == "delete" for name, _kwargs in client.calls)
+
+
+def test_cos_copy_never_deletes_source(tmp_path: Path) -> None:
+    client = FakeCosClient()
+    storage = CosStorage(StorageSettings(
+        "production", "cos", str(tmp_path), "id", "key", "ap-shanghai", "private-123", 300
+    ), client=client)
+    storage.copy("source", "target")
+    assert [name for name, _kwargs in client.calls] == ["copy"]
 
 
 def test_production_storage_settings_require_private_cos(monkeypatch: pytest.MonkeyPatch) -> None:

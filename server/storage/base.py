@@ -9,6 +9,10 @@ class StorageBackend(Protocol):
 
     def delete(self, key: str) -> None: ...
 
+    def copy(self, source_key: str, target_key: str) -> None:
+        """Copy an object without deleting the source."""
+        ...
+
     def move(self, source_key: str, target_key: str) -> None:
         """Move an object without deleting the source before the target copy succeeds."""
         ...

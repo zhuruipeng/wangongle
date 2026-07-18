@@ -48,6 +48,12 @@ class LocalStorage:
     def delete(self, key: str) -> None:
         self.resolve_key(key).unlink(missing_ok=True)
 
+    def copy(self, source_key: str, target_key: str) -> None:
+        source = self.resolve_key(source_key)
+        target = self.resolve_key(target_key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+
     def move(self, source_key: str, target_key: str) -> None:
         source = self.resolve_key(source_key)
         target = self.resolve_key(target_key)
