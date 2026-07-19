@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -72,7 +74,18 @@ def add_audit(
 
 
 def enforce_limit(request: Request, key: str, limit: int, window_seconds: int) -> None:
-    if not check_rate_limit(request.app.state.redis, key, limit, window_seconds):
+    redis_client = request.app.state.redis
+    if redis_client is None:
+        if os.getenv("GANWANLE_ENV", "development").strip().lower() != "production":
+            return
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="限流服务暂时不可用")
+    try:
+        allowed = check_rate_limit(redis_client, key, limit, window_seconds)
+    except RedisError as error:
+        if os.getenv("GANWANLE_ENV", "development").strip().lower() != "production":
+            return
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="限流服务暂时不可用") from error
+    if not allowed:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="请求过于频繁")
 
 

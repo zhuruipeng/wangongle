@@ -2,6 +2,7 @@ import logging
 
 import httpx
 import pytest
+from redis.exceptions import ConnectionError
 from sqlalchemy import select
 
 from server.models import AuditEvent, RefreshSession, User
@@ -142,6 +143,38 @@ def test_login_rate_limit_is_twenty_requests_per_five_minutes(client, monkeypatc
     response = client.post("/api/v1/auth/wechat", json={"code": "valid-code"})
     assert response.status_code == 429
     assert calls == 20
+
+
+def test_login_skips_rate_limit_when_redis_is_unavailable_in_development(client, monkeypatch) -> None:
+    client.app.state.redis = None
+    monkeypatch.setenv("GANWANLE_ENV", "development")
+    monkeypatch.setattr(
+        "server.routers.auth.exchange_code",
+        lambda code, settings: {"openid": "openid-no-redis", "unionid": None},
+    )
+
+    response = client.post("/api/v1/auth/wechat", json={"code": "valid-code"})
+
+    assert response.status_code == 200
+    assert response.json()["user"]["role"] == "technician"
+
+
+def test_login_skips_rate_limit_when_redis_connection_fails_in_development(client, monkeypatch) -> None:
+    class FailingRedis:
+        def eval(self, *args, **kwargs):
+            raise ConnectionError("redis unavailable")
+
+    client.app.state.redis = FailingRedis()
+    monkeypatch.setenv("GANWANLE_ENV", "development")
+    monkeypatch.setattr(
+        "server.routers.auth.exchange_code",
+        lambda code, settings: {"openid": "openid-redis-down", "unionid": None},
+    )
+
+    response = client.post("/api/v1/auth/wechat", json={"code": "valid-code"})
+
+    assert response.status_code == 200
+    assert response.json()["user"]["role"] == "technician"
 
 
 def test_refresh_rate_limit_uses_digest_prefix(client, monkeypatch) -> None:
