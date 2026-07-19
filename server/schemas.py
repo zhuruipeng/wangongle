@@ -97,6 +97,89 @@ class GeneratedServiceReport(BaseModel):
     warnings: list[str] = Field(max_length=100)
 
 
+AiReportSource = Literal["user_text", "manual_input", "unknown"]
+
+
+class AiReportSourceValue(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    value: Optional[str] = Field(default=None, max_length=2000)
+    source: AiReportSource
+
+    @model_validator(mode="after")
+    def unknown_source_must_be_null(self):
+        if self.source == "unknown" and self.value is not None:
+            raise ValueError("unknown source values must be null")
+        if self.source != "unknown" and self.value is not None and not self.value.strip():
+            raise ValueError("sourced values must not be blank")
+        return self
+
+
+class AiReportMoneyValue(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    value: Optional[int] = Field(default=None, ge=0)
+    source: AiReportSource
+
+    @model_validator(mode="after")
+    def unknown_source_must_be_null(self):
+        if self.source == "unknown" and self.value is not None:
+            raise ValueError("unknown source amounts must be null")
+        return self
+
+
+class AiReportCompletedItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    content: str = Field(min_length=1, max_length=1000)
+    source: AiReportSource
+
+
+class AiReportMaterialItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: AiReportSourceValue
+    quantity: AiReportSourceValue
+    amount_cents: AiReportMoneyValue
+
+
+class AiReportLaborItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    description: AiReportSourceValue
+    hours: AiReportSourceValue
+    amount_cents: AiReportMoneyValue
+
+
+class AiServiceReportDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    service_title: Optional[str] = Field(default=None, max_length=200)
+    service_type: str = Field(min_length=1, max_length=300)
+    work_summary: Optional[str] = Field(default=None, max_length=2000)
+    before_status: Optional[str] = Field(default=None, max_length=2000)
+    after_status: Optional[str] = Field(default=None, max_length=2000)
+    completed_items: list[AiReportCompletedItem] = Field(default_factory=list, max_length=100)
+    materials: list[AiReportMaterialItem] = Field(default_factory=list, max_length=100)
+    labor: list[AiReportLaborItem] = Field(default_factory=list, max_length=100)
+    risks: list[str] = Field(default_factory=list, max_length=100)
+    exceptions: list[str] = Field(default_factory=list, max_length=100)
+    customer_confirmation_text: Optional[str] = Field(default=None, max_length=2000)
+    needs_confirmation: list[str] = Field(default_factory=list, max_length=100)
+
+
+class AiReportGenerateRequest(BaseModel):
+    service_type: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    manual_text: Optional[str] = Field(default=None, max_length=10000)
+
+    @field_validator("manual_text", mode="before")
+    @classmethod
+    def trim_manual_text(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip()
+
+
+class AiReportGenerateResponse(BaseModel):
+    status: Literal["succeeded"]
+    report: AiServiceReportDraft
+    model: str
+
+
 class GenerateReportResponse(BaseModel):
     status: Literal["succeeded"]
     report: GeneratedServiceReport
@@ -133,6 +216,7 @@ class ServiceOrderResponse(BaseModel):
     transcript: Optional[str]
     report: Optional[ReportPayload]
     generated_report: Optional[GeneratedServiceReport]
+    ai_report: Optional[AiServiceReportDraft]
     total_amount_cents: int
     paid_amount_cents: int
     audio_url: Optional[str]

@@ -17,6 +17,20 @@ REPORT_PAYLOAD = {
     "total_amount_cents": 31000,
     "paid_amount_cents": 0,
 }
+AI_REPORT_PAYLOAD = {
+    "service_title": "空调安装服务报告",
+    "service_type": "空调安装",
+    "work_summary": "完成空调安装。",
+    "before_status": None,
+    "after_status": None,
+    "completed_items": [{"content": "完成空调安装", "source": "user_text"}],
+    "materials": [],
+    "labor": [],
+    "risks": [],
+    "exceptions": [],
+    "customer_confirmation_text": None,
+    "needs_confirmation": [],
+}
 SIGNATURE_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
@@ -41,6 +55,8 @@ def test_every_order_route_requires_authentication(client, auth_headers, create_
             files={"file": ("voice.mp3", b"ID3-audio", "audio/mpeg")},
         ),
         client.post(f"/api/v1/service-orders/{order_id}/transcribe"),
+        client.post(f"/api/v1/service-orders/{order_id}/ai-report"),
+        client.put(f"/api/v1/service-orders/{order_id}/ai-report", json=AI_REPORT_PAYLOAD),
         client.post(f"/api/v1/service-orders/{order_id}/generate-report"),
         client.put(f"/api/v1/service-orders/{order_id}/report", json=REPORT_PAYLOAD),
         client.post(f"/api/v1/service-orders/{order_id}/submit-acceptance"),
@@ -88,6 +104,8 @@ def test_other_user_cannot_discover_or_mutate_order(client, auth_headers, create
             files={"file": ("voice.mp3", b"ID3-audio", "audio/mpeg")},
         ),
         client.post(f"/api/v1/service-orders/{order_id}/transcribe", headers=stranger),
+        client.post(f"/api/v1/service-orders/{order_id}/ai-report", headers=stranger),
+        client.put(f"/api/v1/service-orders/{order_id}/ai-report", headers=stranger, json=AI_REPORT_PAYLOAD),
         client.post(f"/api/v1/service-orders/{order_id}/generate-report", headers=stranger),
         client.put(
             f"/api/v1/service-orders/{order_id}/report",

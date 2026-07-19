@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import StepProgress from '../../components/StepProgress'
 import { useDelivery } from '../../context/DeliveryContext'
 import { recognitionExample } from '../../mock/service'
-import { generateOrderReport, patchServiceOrder, transcribeOrderAudio, uploadOrderAudio } from '../../services/serviceOrders'
+import { patchServiceOrder, transcribeOrderAudio, uploadOrderAudio } from '../../services/serviceOrders'
 import './index.scss'
 
 declare const __GANWANLE_DEV__: boolean
@@ -26,11 +26,10 @@ recorderManager.onStop(result => activeHandlers?.onStop(result))
 recorderManager.onError(error => activeHandlers?.onError(error))
 
 export default function Voice() {
-  const { serviceOrderId, voicePath, setVoicePath, description, setDescription, setReport, setGeneratedReport, setRemoteOrder } = useDelivery()
+  const { serviceOrderId, voicePath, setVoicePath, description, setDescription, setAiReport, setRemoteOrder } = useDelivery()
   const [phase, setPhaseState] = useState<RecorderPhase>('idle')
   const [remaining, setRemaining] = useState(MAX_SECONDS)
   const [speechError, setSpeechError] = useState('')
-  const [aiError, setAiError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [newAudioUploaded, setNewAudioUploaded] = useState(false)
 
@@ -184,45 +183,19 @@ export default function Voice() {
     if (!transcript || isProcessing || submitting) return
     if (!serviceOrderId) return Taro.showToast({ title: '缺少服务单，请从工作台重新开始', icon: 'none' })
     setSubmitting(true)
-    setAiError('')
     try {
       const order = await patchServiceOrder(serviceOrderId, { transcript })
       setRemoteOrder(order)
-      let force = false
-      if (order.report) {
-        const confirmation = await Taro.showModal({ title: '重新生成报告', content: '该服务单已有报告，重新生成会覆盖尚未保存的AI整理内容。是否继续？', confirmText: '继续生成' })
-        if (!confirmation.confirm) return
-        force = true
-      }
-      const generated = await generateOrderReport(serviceOrderId, force)
-      const materialAmounts = generated.report.materials.map(item => item.amount_cents).filter((value): value is number => value !== null)
-      const laborAmount = generated.report.labor_items[0]?.amount_cents
-      setGeneratedReport(generated.report)
-      setReport({
-        completed: generated.report.completed_items.map(item => item.content),
-        materials: generated.report.materials.map(item => ({
-          name: item.name,
-          quantity: item.quantity === null ? item.unit : `${item.quantity}${item.unit}`,
-          unitPrice: item.unit_price_cents === null ? '' : String(item.unit_price_cents / 100),
-          price: item.amount_cents === null ? '' : String(item.amount_cents / 100)
-        })),
-        serviceFee: laborAmount === null || laborAmount === undefined ? '' : String(laborAmount / 100),
-        materialFee: materialAmounts.length ? String(materialAmounts.reduce((sum, value) => sum + value, 0) / 100) : '',
-        paid: String(generated.paid_amount_cents / 100),
-        risks: generated.report.risks.map(item => item.content),
-        afterSales: generated.report.after_sales.map(item => item.content).join('；')
-      })
+      setAiReport(order.ai_report)
       await Taro.navigateTo({ url: '/pages/report/index' })
     } catch (error) {
-      setAiError('AI整理失败，可直接手工填写')
-      Taro.showToast({ title: error instanceof Error ? error.message : 'AI整理失败，可直接手工填写', icon: 'none', duration: 3000 })
+      Taro.showToast({ title: error instanceof Error ? error.message : '文字保存失败', icon: 'none', duration: 3000 })
     }
     finally { setSubmitting(false) }
   }
 
   const openManualReport = async () => {
-    setGeneratedReport(null)
-    setReport({ completed: [''], materials: [], serviceFee: '', materialFee: '', paid: '0', risks: [], afterSales: '' })
+    setAiReport(null)
     await Taro.navigateTo({ url: '/pages/report/index' })
   }
 
@@ -244,7 +217,7 @@ export default function Voice() {
     <View className='manual'><Text className='section-title'>手动输入或修改识别文字</Text>
       <Textarea className='text-area' value={description} maxlength={500} placeholder='请输入本次完成内容、所用材料和异常情况' onInput={e => setDescription(e.detail.value)} />
     </View>
-    {aiError && <View className='speech-error'><Text>{aiError}</Text><Button className='small-action' onClick={openManualReport}>直接手工填写报告</Button></View>}
-    <View className='fixed-actions'><Button className='primary-btn' loading={submitting} disabled={!description.trim() || isProcessing || phase === 'recording' || submitting} onClick={next}>{submitting ? '正在整理服务报告' : 'AI生成报告'}</Button></View>
+    {speechError && <View className='speech-actions'><Button className='small-action' onClick={openManualReport}>直接手工填写报告</Button></View>}
+    <View className='fixed-actions'><Button className='primary-btn' loading={submitting} disabled={!description.trim() || isProcessing || phase === 'recording' || submitting} onClick={next}>{submitting ? '正在保存文字' : '下一步：生成报告'}</Button></View>
   </View>
 }

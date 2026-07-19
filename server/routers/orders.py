@@ -8,7 +8,7 @@ from typing import Literal, Optional
 from uuid import uuid4
 import warnings
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import and_, or_, select, update
@@ -27,6 +27,9 @@ from ..models import (
 from ..schemas import (
     AcceptanceMetadata,
     AcceptanceResponse,
+    AiReportGenerateRequest,
+    AiReportGenerateResponse,
+    AiServiceReportDraft,
     AudioResponse,
     FeeItem,
     GenerateReportResponse,
@@ -40,6 +43,7 @@ from ..schemas import (
     TranscriptionResponse,
 )
 from ..security import get_current_user
+from ..services.ai_report_generator import generate_ai_service_report
 from ..services.report_generator import ReportGenerationError, generate_service_report
 from ..services.speech_to_text import SpeechToTextError, transcribe_audio
 from ..settings import get_ai_report_settings, get_asr_settings, get_storage_settings
@@ -203,7 +207,10 @@ def report_from_order(order: ServiceOrder) -> Optional[ReportPayload]:
     try:
         return ReportPayload.model_validate_json(order.report_json)
     except ValueError:
-        generated = GeneratedServiceReport.model_validate_json(order.report_json)
+        try:
+            generated = GeneratedServiceReport.model_validate_json(order.report_json)
+        except ValueError:
+            return None
         return ReportPayload(
             completed_items=[item.content for item in generated.completed_items],
             materials=[MaterialItem(
@@ -224,6 +231,15 @@ def generated_report_from_order(order: ServiceOrder) -> Optional[GeneratedServic
         return None
     try:
         return GeneratedServiceReport.model_validate_json(order.report_json)
+    except ValueError:
+        return None
+
+
+def ai_report_from_order(order: ServiceOrder) -> Optional[AiServiceReportDraft]:
+    if not order.report_json:
+        return None
+    try:
+        return AiServiceReportDraft.model_validate_json(order.report_json)
     except ValueError:
         return None
 
@@ -253,6 +269,7 @@ def order_response(order: ServiceOrder) -> ServiceOrderResponse:
         service_address=order.service_address, service_type=order.service_type,
         technician_name=order.technician_name, status=order.status,
         transcript=order.transcript, report=report_from_order(order), generated_report=generated_report_from_order(order),
+        ai_report=ai_report_from_order(order),
         total_amount_cents=order.total_amount_cents, paid_amount_cents=order.paid_amount_cents,
         audio_url=(
             storage.presigned_get_url(order.audio_object_key, get_storage_settings().presigned_seconds)
@@ -772,6 +789,146 @@ def transcribe_order_audio(
         transcript=result.transcript,
         audio_duration_ms=result.audio_duration_ms,
     )
+
+
+@router.post("/{order_id}/ai-report", response_model=AiReportGenerateResponse)
+def generate_order_ai_report(
+    order_id: str,
+    request: Request,
+    payload: Optional[AiReportGenerateRequest] = Body(default=None),
+    force: bool = Query(default=False),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    order = get_order_or_404(db, current_user.id, order_id)
+    request_payload = payload or AiReportGenerateRequest()
+    transcript = (order.transcript or "").strip()
+    manual_text = (request_payload.manual_text or "").strip()
+    if not transcript and not manual_text:
+        add_audit(db, request, current_user, order.id, "ai_report_generation", "failed")
+        db.commit()
+        raise HTTPException(status_code=400, detail="请先保存语音识别文字或手动补充文字")
+    storage = get_storage()
+    storage_settings = get_storage_settings()
+    photos = sorted(order.photos, key=lambda item: (item.phase, item.sort_order, item.created_at))
+    before_photo_urls = [
+        storage.presigned_get_url(item.object_key, storage_settings.presigned_seconds)
+        for item in photos
+        if item.phase == "before" and item.object_key
+    ]
+    after_photo_urls = [
+        storage.presigned_get_url(item.object_key, storage_settings.presigned_seconds)
+        for item in photos
+        if item.phase == "after" and item.object_key
+    ]
+    if not before_photo_urls or not after_photo_urls:
+        add_audit(db, request, current_user, order.id, "ai_report_generation", "failed")
+        db.commit()
+        raise HTTPException(status_code=400, detail="请先上传施工前和施工后照片")
+    if order.report_json and not force:
+        add_audit(db, request, current_user, order.id, "ai_report_generation", "failed")
+        db.commit()
+        raise HTTPException(status_code=409, detail="服务单已有报告，确认后才能重新生成")
+    settings = get_ai_report_settings()
+    if not settings.is_configured:
+        order.report_generation_status = "failed"
+        order.report_generation_error = "AI报告服务尚未配置"
+        add_audit(db, request, current_user, order.id, "ai_report_generation", "failed")
+        db.commit()
+        raise HTTPException(status_code=503, detail="AI报告服务尚未配置")
+
+    claim_time = datetime.now(timezone.utc)
+    try:
+        claimed = db.execute(
+            build_report_claim_statement(
+                order.id,
+                current_user.id,
+                settings.model,
+                claim_time,
+                force,
+            )
+        )
+        db.commit()
+    except Exception:
+        mark_report_claim_failed(
+            db, request, current_user, order.id, claim_time, "AI报告生成失败"
+        )
+        raise
+    if claimed.rowcount != 1:
+        add_audit(db, request, current_user, order.id, "ai_report_generation", "failed")
+        db.commit()
+        raise HTTPException(status_code=409, detail="服务报告正在整理，请勿重复提交")
+    db.refresh(order)
+    try:
+        result = generate_ai_service_report(
+            service_type=(request_payload.service_type or order.service_type).strip(),
+            before_photo_urls=before_photo_urls,
+            after_photo_urls=after_photo_urls,
+            transcript=transcript,
+            manual_text=manual_text,
+            settings=settings,
+        )
+    except ReportGenerationError as error:
+        summary = str(error)[:500] or "AI报告生成失败"
+        mark_report_claim_failed(db, request, current_user, order.id, claim_time, summary)
+        raise HTTPException(status_code=502, detail=summary) from None
+    except Exception:
+        mark_report_claim_failed(
+            db, request, current_user, order.id, claim_time, "AI报告生成失败"
+        )
+        raise
+
+    try:
+        completed = db.execute(
+            update(ServiceOrder)
+            .where(
+                ServiceOrder.id == order.id,
+                ServiceOrder.owner_user_id == current_user.id,
+                ServiceOrder.report_generation_status == "processing",
+                ServiceOrder.updated_at == claim_time,
+            )
+            .values(
+                report_json=result.report.model_dump_json(),
+                report_generation_status="succeeded",
+                report_generation_error=None,
+                report_model=settings.model,
+                report_generated_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        if completed.rowcount != 1:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="服务报告生成任务已被新的请求接管")
+        add_audit(db, request, current_user, order.id, "ai_report_generation", "succeeded")
+        db.commit()
+        db.refresh(order)
+    except HTTPException:
+        raise
+    except Exception:
+        mark_report_claim_failed(
+            db, request, current_user, order.id, claim_time, "AI报告生成失败"
+        )
+        raise
+    return AiReportGenerateResponse(status="succeeded", report=result.report, model=settings.model)
+
+
+@router.put("/{order_id}/ai-report", response_model=ServiceOrderResponse)
+def save_ai_report(
+    order_id: str,
+    payload: AiServiceReportDraft,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    order = get_order_or_404(db, current_user.id, order_id)
+    order.report_json = payload.model_dump_json()
+    order.report_generation_status = "succeeded"
+    order.report_generation_error = None
+    order.report_generated_at = datetime.now(timezone.utc)
+    add_audit(db, request, current_user, order.id, "ai_report_saved", "succeeded")
+    db.commit()
+    db.refresh(order)
+    return order_response(order)
 
 
 @router.post("/{order_id}/generate-report", response_model=GenerateReportResponse)

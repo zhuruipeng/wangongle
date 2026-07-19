@@ -58,6 +58,7 @@ export default function Workbench() {
       <Text className='workbench-order-customer'>{order.customer_name}</Text>
       <Text className='workbench-order-line'>{order.service_address}</Text>
       <Text className='workbench-order-line'>{order.service_type}</Text>
+      {order.ai_report?.work_summary && <Text className='workbench-order-line'>报告：{order.ai_report.work_summary}</Text>}
     </View>)}
   </View>
 }

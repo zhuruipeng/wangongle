@@ -2,7 +2,7 @@ import Taro from '@tarojs/taro'
 import { createContext, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react'
 import { useAuth } from './AuthContext'
 import { initialReport } from '../mock/service'
-import type { ApiGeneratedReport, ApiServiceOrder } from '../services/serviceOrders'
+import type { ApiAiServiceReportDraft, ApiGeneratedReport, ApiServiceOrder } from '../services/serviceOrders'
 
 export type Material = { name: string; quantity: string; unitPrice?: string; price: string }
 export type Report = {
@@ -16,9 +16,11 @@ export type Report = {
 }
 type DeliveryState = {
   serviceOrderId: string; remoteOrder: ApiServiceOrder | null
+  aiReport: ApiAiServiceReportDraft | null
   generatedReport: ApiGeneratedReport | null; reportConfirmed: boolean
   beforePhotos: string[]; afterPhotos: string[]; voicePath: string; description: string; report: Report
   setServiceOrderId: (v: string) => void; setRemoteOrder: (v: ApiServiceOrder | null) => void
+  setAiReport: (v: ApiAiServiceReportDraft | null) => void
   setGeneratedReport: (v: ApiGeneratedReport | null) => void; setReportConfirmed: (v: boolean) => void
   setBeforePhotos: (v: string[]) => void; setAfterPhotos: (v: string[]) => void
   setVoicePath: (v: string) => void; setDescription: (v: string) => void; setReport: (v: Report) => void
@@ -32,6 +34,7 @@ export function DeliveryProvider({ children }: PropsWithChildren) {
   const [activeStorageKey, setActiveStorageKey] = useState('')
   const [serviceOrderId, setServiceOrderIdState] = useState('')
   const [remoteOrder, setRemoteOrder] = useState<ApiServiceOrder | null>(null)
+  const [aiReport, setAiReport] = useState<ApiAiServiceReportDraft | null>(null)
   const [generatedReport, setGeneratedReportState] = useState<ApiGeneratedReport | null>(null)
   const [reportConfirmed, setReportConfirmed] = useState(false)
   const [beforePhotos, setBeforePhotos] = useState<string[]>([])
@@ -42,6 +45,7 @@ export function DeliveryProvider({ children }: PropsWithChildren) {
   const clearDeliveryState = () => {
     setServiceOrderIdState('')
     setRemoteOrder(null)
+    setAiReport(null)
     setGeneratedReportState(null)
     setReportConfirmed(false)
     setBeforePhotos([])
@@ -74,10 +78,10 @@ export function DeliveryProvider({ children }: PropsWithChildren) {
     value ? Taro.setStorageSync(storageKey, value) : Taro.removeStorageSync(storageKey)
   }
   const setGeneratedReport = (value: ApiGeneratedReport | null) => { setGeneratedReportState(value); setReportConfirmed(false) }
-  const value = useMemo(() => ({ serviceOrderId, remoteOrder, generatedReport, reportConfirmed, beforePhotos, afterPhotos, voicePath, description, report,
-    setServiceOrderId, setRemoteOrder, setGeneratedReport, setReportConfirmed,
+  const value = useMemo(() => ({ serviceOrderId, remoteOrder, aiReport, generatedReport, reportConfirmed, beforePhotos, afterPhotos, voicePath, description, report,
+    setServiceOrderId, setRemoteOrder, setAiReport, setGeneratedReport, setReportConfirmed,
     setBeforePhotos, setAfterPhotos, setVoicePath, setDescription, setReport
-  }), [serviceOrderId, remoteOrder, generatedReport, reportConfirmed, beforePhotos, afterPhotos, voicePath, description, report])
+  }), [serviceOrderId, remoteOrder, aiReport, generatedReport, reportConfirmed, beforePhotos, afterPhotos, voicePath, description, report])
   return <DeliveryContext.Provider value={value}>{children}</DeliveryContext.Provider>
 }
 

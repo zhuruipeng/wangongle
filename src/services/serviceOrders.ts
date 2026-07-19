@@ -22,10 +22,29 @@ export type ApiGeneratedReport = {
   warnings: string[]
 }
 export type GenerateReportResult = { status: 'succeeded'; report: ApiGeneratedReport; total_amount_cents: number; paid_amount_cents: number; due_amount_cents: number; model: string }
+export type AiReportSource = 'user_text' | 'manual_input' | 'unknown'
+export type ApiAiReportSourceValue = { value: string | null; source: AiReportSource }
+export type ApiAiReportMoneyValue = { value: number | null; source: AiReportSource }
+export type ApiAiServiceReportDraft = {
+  service_title: string | null
+  service_type: string
+  work_summary: string | null
+  before_status: string | null
+  after_status: string | null
+  completed_items: Array<{ content: string; source: AiReportSource }>
+  materials: Array<{ name: ApiAiReportSourceValue; quantity: ApiAiReportSourceValue; amount_cents: ApiAiReportMoneyValue }>
+  labor: Array<{ description: ApiAiReportSourceValue; hours: ApiAiReportSourceValue; amount_cents: ApiAiReportMoneyValue }>
+  risks: string[]
+  exceptions: string[]
+  customer_confirmation_text: string | null
+  needs_confirmation: string[]
+}
+export type GenerateAiReportResult = { status: 'succeeded'; report: ApiAiServiceReportDraft; model: string }
 export type ApiServiceOrder = {
   id: string; order_no: string; company_name: string; customer_name: string; customer_phone: string
   service_address: string; service_type: string; technician_name: string; status: OrderStatus
   transcript: string | null; report: ApiReport | null; generated_report: ApiGeneratedReport | null; total_amount_cents: number; paid_amount_cents: number
+  ai_report: ApiAiServiceReportDraft | null
   audio_url: string | null; before_photos: ApiPhoto[]; after_photos: ApiPhoto[]; created_at: string; updated_at: string
   transcription_status: 'not_started' | 'processing' | 'succeeded' | 'failed'
   transcription_error: string | null; asr_request_id: string | null; audio_duration_ms: number | null
@@ -46,5 +65,7 @@ export const deleteOrderPhoto = (id: string, photoId: string) => apiRequest<void
 export const uploadOrderAudio = (id: string, filePath: string) => uploadFile<{ audio_url: string }>(`/api/v1/service-orders/${id}/audio`, filePath)
 export const transcribeOrderAudio = (id: string) => apiRequest<{ status: 'succeeded' | 'failed'; transcript?: string; audio_duration_ms?: number; error?: string }>(`/api/v1/service-orders/${id}/transcribe`, { method: 'POST', timeout: 45000 })
 export const generateOrderReport = (id: string, force = false) => apiRequest<GenerateReportResult>(`/api/v1/service-orders/${id}/generate-report?force=${force}`, { method: 'POST', timeout: 120000 })
+export const generateAiOrderReport = (id: string, manualText = '', force = false) => apiRequest<GenerateAiReportResult>(`/api/v1/service-orders/${id}/ai-report?force=${force}`, { method: 'POST', data: { manual_text: manualText }, timeout: 120000 })
 export const saveOrderReport = (id: string, report: ApiReport) => apiRequest<ApiServiceOrder>(`/api/v1/service-orders/${id}/report`, { method: 'PUT', data: report })
+export const saveAiOrderReport = (id: string, report: ApiAiServiceReportDraft) => apiRequest<ApiServiceOrder>(`/api/v1/service-orders/${id}/ai-report`, { method: 'PUT', data: report })
 export const submitOrderAcceptance = (id: string) => apiRequest<ApiServiceOrder>(`/api/v1/service-orders/${id}/submit-acceptance`, { method: 'POST' })
