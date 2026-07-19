@@ -1,6 +1,12 @@
 @use '../../styles/variables' as *;
 .ai-warning { color: #9b5514; background: #fff1df; border-left: 8px solid $color-warning; padding: 22px; border-radius: 12px; margin-bottom: 24px; font-size: 26px; line-height: 1.5; }
 .report-card { margin-bottom: 22px; }.report-card .section-title { display: block; color: $color-primary; }.report-card .text-input { margin-top: 12px; }
+.report-page .text-input { height: 84px; min-height: 84px; padding: 0 20px; line-height: 84px; }
+.report-page .text-area { line-height: 1.5; }
+.report-field { margin-top: 20px; }
+.report-field-label { display: block; margin-bottom: 9px; color: $color-muted; font-size: 25px; line-height: 1.4; }
+.report-field .text-input, .report-field .text-area { margin-top: 0; }
+.report-field .summary-input { min-height: 150px; }
 .material { padding: 18px 0 24px; border-bottom: 2px solid $color-border; }.material:last-child { border: 0; }.material-name { font-weight: 600; }.material-row { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }.mini-label { display: block; color: $color-muted; font-size: 23px; margin-top: 14px; }
 .fee, .sum { display: flex; align-items: center; justify-content: space-between; min-height: 76px; border-bottom: 2px solid $color-border; }.fee-input { display: flex; align-items: center; color: $color-muted; }.fee-input input { width: 150px; text-align: right; font-size: 30px; padding: 10px; }.sum { font-weight: 700; }.sum.due { color: $color-warning; font-size: 34px; border: 0; }
 .risk { border-top: 7px solid $color-warning; }.risk-input { min-height: 110px; margin-top: 14px; }.compact { min-height: 110px; }

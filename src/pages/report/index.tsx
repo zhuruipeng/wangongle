@@ -119,9 +119,15 @@ export default function ReportPage() {
 
     <View className='report-card card'>
       <Text className='section-title'>基础信息</Text>
-      <Input className='text-input' value={report.service_title || ''} placeholder='报告标题' onInput={event => updateTextField('service_title', event.detail.value)} />
-      <Input className='text-input' value={report.service_type} placeholder='服务类型' onInput={event => updateTextField('service_type', event.detail.value)} />
-      <Textarea className='text-area compact' value={report.work_summary || ''} placeholder='服务概述' onInput={event => updateTextField('work_summary', event.detail.value)} />
+      <ReportField label='报告标题'>
+        <Input className='text-input' value={report.service_title || ''} placeholder='请输入报告标题' onInput={event => updateTextField('service_title', event.detail.value)} />
+      </ReportField>
+      <ReportField label='服务类型'>
+        <Input className='text-input' value={report.service_type} placeholder='请输入服务类型' onInput={event => updateTextField('service_type', event.detail.value)} />
+      </ReportField>
+      <ReportField label='服务概述'>
+        <Textarea className='text-area compact summary-input' value={report.work_summary || ''} maxlength={1000} placeholder='请说明本次完成的主要工作' onInput={event => updateTextField('work_summary', event.detail.value)} />
+      </ReportField>
     </View>
 
     <View className='report-card card'>
@@ -174,4 +180,8 @@ function ListEditor({ title, values, onChange, onAdd }: { title: string; values:
     {values.map((value, index) => <Textarea className='text-area risk-input' key={index} value={value} onInput={event => onChange(index, event.detail.value)} />)}
     <Button className='add-item' onClick={onAdd}>+ 添加{title}</Button>
   </View>
+}
+
+function ReportField({ label, children }: { label: string; children: React.ReactNode }) {
+  return <View className='report-field'><Text className='report-field-label'>{label}</Text>{children}</View>
 }

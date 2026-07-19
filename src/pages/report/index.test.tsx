@@ -54,6 +54,24 @@ describe('ReportPage AI report V1', () => {
     expect(setAiReport).toHaveBeenCalledWith(report)
   })
 
+  it('renders clearly labeled basic report fields', () => {
+    vi.mocked(useDelivery).mockReturnValue({
+      serviceOrderId: 'order-1',
+      remoteOrder: { id: 'order-1', service_type: '空调安装', transcript: '完成空调安装。', ai_report: report },
+      aiReport: report,
+      setAiReport,
+      setRemoteOrder,
+      description: '完成空调安装。'
+    } as never)
+    const renderer = create(<ReportPage />)
+    const output = JSON.stringify(renderer.toJSON())
+
+    expect(output).toContain('报告标题')
+    expect(output).toContain('服务类型')
+    expect(output).toContain('服务概述')
+    expect(renderer.root.findAllByType('input').slice(0, 2).every(input => input.props.className === 'text-input')).toBe(true)
+  })
+
   it('saves the edited report and opens customer acceptance', async () => {
     vi.mocked(useDelivery).mockReturnValue({
       serviceOrderId: 'order-1',

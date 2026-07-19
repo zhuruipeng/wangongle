@@ -1,6 +1,6 @@
 import Taro, { useDidShow } from '@tarojs/taro'
 import { Button, Input, Text, View } from '@tarojs/components'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useAuth } from '../../context/AuthContext'
 import { useDelivery } from '../../context/DeliveryContext'
 import { createServiceOrder, listServiceOrders, type ApiServiceOrder } from '../../services/serviceOrders'
@@ -52,14 +52,31 @@ function nextOrderPage(order: ApiServiceOrder): string {
   return '/pages/report/index'
 }
 
+function matchesOrder(order: ApiServiceOrder, query: string): boolean {
+  const keyword = query.trim().toLocaleLowerCase()
+  if (!keyword) return true
+  return [
+    order.order_no,
+    order.company_name,
+    order.customer_name,
+    order.customer_phone,
+    order.service_address,
+    order.service_type,
+    order.technician_name,
+    orderStatusLabel(order)
+  ].some(value => value.toLocaleLowerCase().includes(keyword))
+}
+
 export default function Workbench() {
   const [date, setDate] = useState('')
   const [creating, setCreating] = useState(false)
   const [draft, setDraft] = useState<OrderDraft>(emptyDraft)
   const [recentOrders, setRecentOrders] = useState<ApiServiceOrder[]>([])
   const [listError, setListError] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
   const { user } = useAuth()
   const { selectServiceOrder } = useDelivery()
+  const visibleOrders = useMemo(() => recentOrders.filter(order => matchesOrder(order, searchQuery)), [recentOrders, searchQuery])
   useDidShow(async () => {
     setDate(new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }))
     try {
@@ -116,10 +133,24 @@ export default function Workbench() {
       <View className='stat card'><Text className='number'>{recentOrders.length}</Text><Text>我的服务单</Text></View>
       <View className='stat card'><Text className='number warning'>{recentOrders.filter(order => order.status === 'waiting_acceptance').length}</Text><Text>待客户验收</Text></View>
     </View>
-    <View className='section-title'>最近服务单</View>
+    <View className='recent-orders-head'>
+      <Text className='section-title'>最近服务单</Text>
+      {!!searchQuery.trim() && <Text className='search-result-count'>{visibleOrders.length} 条匹配</Text>}
+    </View>
+    <View className='order-search'>
+      <Input
+        value={searchQuery}
+        confirmType='search'
+        maxlength={100}
+        placeholder='搜索服务单号、客户、电话、地址或服务项目'
+        onInput={event => setSearchQuery(event.detail.value)}
+      />
+      {!!searchQuery && <Button className='order-search-clear' onClick={() => setSearchQuery('')}>×</Button>}
+    </View>
     {!!listError && <View className='order-list-message card'><Text>{listError}</Text></View>}
     {!listError && recentOrders.length === 0 && <View className='order-list-message card'><Text>还没有服务单，点击上方按钮开始第一单。</Text></View>}
-    {recentOrders.map(order => <View className='workbench-order card' key={order.id}>
+    {!listError && recentOrders.length > 0 && visibleOrders.length === 0 && <View className='order-list-message card'><Text>没有找到匹配的服务单，请更换关键词。</Text></View>}
+    {visibleOrders.map(order => <View className='workbench-order card' key={order.id}>
       <View className='workbench-order-head'><Text>{order.order_no}</Text><Text className={`workbench-order-status status-${order.status}`}>{orderStatusLabel(order)}</Text></View>
       <Text className='workbench-order-customer'>{order.customer_name}</Text>
       <Text className='workbench-order-line'>{order.customer_phone}</Text>

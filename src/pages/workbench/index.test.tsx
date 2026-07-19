@@ -48,7 +48,7 @@ describe('Workbench identity and orders', () => {
 
   const fillDraft = async (renderer: ReturnType<typeof create>) => {
     const values = ['安心空调服务', '李先生', '13900001111', '临沂市兰山区测试路1号', '空调维修']
-    const inputs = renderer.root.findAllByType('input')
+    const inputs = renderer.root.findAll(node => node.type === 'input' && node.props.confirmType !== 'search')
     for (let index = 0; index < inputs.length; index += 1) {
       await act(async () => inputs[index].props.onInput({ detail: { value: values[index] } }))
     }
@@ -64,6 +64,42 @@ describe('Workbench identity and orders', () => {
     expect(listServiceOrders).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(renderer.toJSON())).toContain('GW-1-ABC123')
     expect(JSON.stringify(renderer.toJSON())).toContain('王先生')
+  })
+
+  it('searches recent orders across customer, phone, address and service fields', async () => {
+    const secondOrder = {
+      ...order,
+      id: 'order-2',
+      order_no: 'GW-2-XYZ789',
+      customer_name: '李女士',
+      customer_phone: '13900002222',
+      service_address: '兰山区测试路8号',
+      service_type: '热水器维修'
+    }
+    vi.mocked(listServiceOrders).mockResolvedValue([order, secondOrder] as never)
+
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Workbench />) })
+    await act(async () => { await taroHooks.didShow?.() })
+    const search = renderer.root.findAllByType('input').find(input => input.props.confirmType === 'search')
+    await act(async () => search?.props.onInput({ detail: { value: '热水器' } }))
+
+    const output = JSON.stringify(renderer.toJSON())
+    const resultCount = renderer.root.findAllByType('text').find(text => text.props.className === 'search-result-count')
+    expect(output).toContain('李女士')
+    expect(resultCount?.children.join('')).toBe('1 条匹配')
+    expect(output).not.toContain('王先生')
+  })
+
+  it('shows a clear empty state when no recent order matches', async () => {
+    vi.mocked(listServiceOrders).mockResolvedValue([order] as never)
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Workbench />) })
+    await act(async () => { await taroHooks.didShow?.() })
+    const search = renderer.root.findAllByType('input').find(input => input.props.confirmType === 'search')
+    await act(async () => search?.props.onInput({ detail: { value: '不存在的客户' } }))
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('没有找到匹配的服务单')
   })
 
   it('requires complete customer and service details before creation', async () => {
