@@ -1,0 +1,18 @@
+@use '../../styles/variables' as *;
+
+.login-page { display: flex; min-height: 100vh; flex-direction: column; justify-content: center; padding-bottom: calc(70px + env(safe-area-inset-bottom)); }
+.work-order-stamp { width: 176px; height: 176px; margin: 0 auto 46px; border: 5px solid $color-primary; border-radius: 50%; color: $color-primary; display: flex; flex-direction: column; align-items: center; justify-content: center; transform: rotate(-5deg); box-shadow: inset 0 0 0 8px $color-primary-light, 0 12px 24px rgba(23, 59, 101, .12); }
+.work-order-stamp.is-failed { color: $color-warning; border-color: $color-warning; box-shadow: inset 0 0 0 8px #fff4e8, 0 12px 24px rgba(237, 139, 45, .12); }
+.stamp-kicker { font-size: 23px; letter-spacing: 4px; }
+.stamp-state { margin-top: 8px; font-size: 34px; font-weight: 700; }
+.login-copy { text-align: center; }
+.login-copy .page-title { display: block; margin-bottom: 18px; }
+.login-description { display: block; max-width: 560px; margin: 0 auto 38px; color: $color-muted; font-size: 27px; line-height: 1.65; }
+.login-progress, .login-error { max-width: 620px; width: 100%; margin: 0 auto; }
+.login-progress { display: flex; align-items: center; justify-content: center; gap: 18px; color: #4d6176; }
+.status-dot { width: 18px; height: 18px; border-radius: 50%; background: $color-success; box-shadow: 0 0 0 10px rgba(31, 157, 104, .12); }
+.login-error { border-left: 8px solid $color-warning; }
+.error-label { display: block; color: $color-warning; font-size: 25px; font-weight: 700; }
+.error-message { display: block; margin: 14px 0 26px; line-height: 1.55; }
+.retry-btn { width: 100%; }
+.login-footnote { margin-top: 30px; color: $color-muted; font-size: 24px; text-align: center; }

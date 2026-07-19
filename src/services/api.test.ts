@@ -1,0 +1,100 @@
+import Taro from '@tarojs/taro'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { apiRequest, uploadFile } from './api'
+import { clearSession, getAccessToken, refreshSession } from './session'
+
+vi.mock('@tarojs/taro', () => ({
+  default: {
+    request: vi.fn(),
+    uploadFile: vi.fn(),
+    reLaunch: vi.fn()
+  }
+}))
+
+vi.mock('./session', () => ({
+  clearSession: vi.fn(),
+  getAccessToken: vi.fn(),
+  refreshSession: vi.fn()
+}))
+
+describe('authenticated API transport', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    vi.mocked(getAccessToken).mockReturnValue('access-token')
+    vi.mocked(refreshSession).mockResolvedValue({
+      access_token: 'rotated-access',
+      refresh_token: 'rotated-refresh',
+      user: { id: 'user-1', technician_name: '王师傅', role: 'technician', profile_complete: true }
+    })
+  })
+
+  it('sends the persisted access token as a Bearer header', async () => {
+    vi.mocked(Taro.request).mockResolvedValueOnce({ statusCode: 200, data: { ok: true } } as never)
+
+    await apiRequest('/api/v1/auth/me')
+
+    expect(Taro.request).toHaveBeenCalledWith(expect.objectContaining({
+      header: expect.objectContaining({ Authorization: 'Bearer access-token' })
+    }))
+  })
+
+  it('refreshes one 401 and retries the original request exactly once', async () => {
+    vi.mocked(Taro.request)
+      .mockResolvedValueOnce({ statusCode: 401, data: { detail: 'expired' } } as never)
+      .mockResolvedValueOnce({ statusCode: 200, data: { ok: true } } as never)
+    vi.mocked(getAccessToken)
+      .mockReturnValueOnce('expired-access')
+      .mockReturnValueOnce('rotated-access')
+
+    await expect(apiRequest('/api/v1/service-orders')).resolves.toEqual({ ok: true })
+
+    expect(refreshSession).toHaveBeenCalledTimes(1)
+    expect(Taro.request).toHaveBeenCalledTimes(2)
+    expect(Taro.request).toHaveBeenLastCalledWith(expect.objectContaining({
+      url: 'http://localhost:8000/api/v1/service-orders',
+      header: expect.objectContaining({ Authorization: 'Bearer rotated-access' })
+    }))
+  })
+
+  it('clears the session and reLaunches login after the retried request also returns 401', async () => {
+    vi.mocked(Taro.request)
+      .mockResolvedValueOnce({ statusCode: 401, data: { detail: 'expired' } } as never)
+      .mockResolvedValueOnce({ statusCode: 401, data: { detail: 'invalid' } } as never)
+
+    await expect(apiRequest('/api/v1/service-orders')).rejects.toThrow('invalid')
+
+    expect(refreshSession).toHaveBeenCalledTimes(1)
+    expect(Taro.request).toHaveBeenCalledTimes(2)
+    expect(clearSession).toHaveBeenCalledTimes(1)
+    expect(Taro.reLaunch).toHaveBeenCalledWith({ url: '/pages/login/index' })
+  })
+
+  it('does not recursively refresh the login or refresh endpoints', async () => {
+    vi.mocked(Taro.request).mockResolvedValue({ statusCode: 401, data: { detail: 'invalid' } } as never)
+
+    await expect(apiRequest('/api/v1/auth/wechat', { method: 'POST' })).rejects.toThrow('invalid')
+    await expect(apiRequest('/api/v1/auth/refresh', { method: 'POST' })).rejects.toThrow('invalid')
+
+    expect(refreshSession).not.toHaveBeenCalled()
+    expect(Taro.request).toHaveBeenCalledTimes(2)
+  })
+
+  it('adds Bearer auth to uploads and refreshes one 401 before retrying', async () => {
+    vi.mocked(Taro.uploadFile)
+      .mockResolvedValueOnce({ statusCode: 401, data: JSON.stringify({ detail: 'expired' }) } as never)
+      .mockResolvedValueOnce({ statusCode: 200, data: JSON.stringify({ file_url: '/files/photo.jpg' }) } as never)
+    vi.mocked(getAccessToken)
+      .mockReturnValueOnce('expired-access')
+      .mockReturnValueOnce('rotated-access')
+
+    await expect(uploadFile('/api/v1/service-orders/order-1/photos', '/tmp/photo.jpg', { phase: 'before' }))
+      .resolves.toEqual({ file_url: '/files/photo.jpg' })
+
+    expect(refreshSession).toHaveBeenCalledTimes(1)
+    expect(Taro.uploadFile).toHaveBeenCalledTimes(2)
+    expect(Taro.uploadFile).toHaveBeenLastCalledWith(expect.objectContaining({
+      header: { Authorization: 'Bearer rotated-access' },
+      formData: { phase: 'before' }
+    }))
+  })
+})

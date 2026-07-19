@@ -1,0 +1,14 @@
+@use '../../styles/variables' as *;
+
+.profile-page { padding-top: 54px; }
+.profile-heading { margin-bottom: 36px; }
+.profile-stamp { display: inline-flex; padding: 9px 18px; margin-bottom: 24px; border: 3px solid $color-success; border-radius: 8px; color: $color-success; font-size: 23px; font-weight: 700; letter-spacing: 3px; transform: rotate(-2deg); }
+.profile-heading .page-title { display: block; }
+.profile-description { display: block; max-width: 640px; color: $color-muted; font-size: 27px; line-height: 1.65; }
+.profile-form { padding: 32px; }
+.profile-form .field { margin-top: 0; }
+.profile-form .text-input { height: 92px; background: #fff; }
+.field-helper, .field-error { display: block; margin-top: 12px; font-size: 24px; line-height: 1.5; }
+.field-helper { color: $color-muted; }
+.field-error { color: #b5472f; }
+.save-profile-btn { width: 100%; margin-top: 34px; }

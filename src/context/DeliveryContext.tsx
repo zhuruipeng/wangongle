@@ -1,5 +1,6 @@
 import Taro from '@tarojs/taro'
-import { createContext, useContext, useMemo, useState, type PropsWithChildren } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react'
+import { useAuth } from './AuthContext'
 import { initialReport } from '../mock/service'
 import type { ApiGeneratedReport, ApiServiceOrder } from '../services/serviceOrders'
 
@@ -26,6 +27,7 @@ type DeliveryState = {
 const DeliveryContext = createContext<DeliveryState | null>(null)
 
 export function DeliveryProvider({ children }: PropsWithChildren) {
+  const { status: authStatus } = useAuth()
   const [serviceOrderId, setServiceOrderIdState] = useState(() => Taro.getStorageSync<string>('ganwanleServiceOrderId') || '')
   const [remoteOrder, setRemoteOrder] = useState<ApiServiceOrder | null>(null)
   const [generatedReport, setGeneratedReportState] = useState<ApiGeneratedReport | null>(null)
@@ -35,6 +37,19 @@ export function DeliveryProvider({ children }: PropsWithChildren) {
   const [voicePath, setVoicePath] = useState('')
   const [description, setDescription] = useState('')
   const [report, setReport] = useState<Report>(initialReport)
+  useEffect(() => {
+    if (authStatus !== 'anonymous') return
+    setServiceOrderIdState('')
+    setRemoteOrder(null)
+    setGeneratedReportState(null)
+    setReportConfirmed(false)
+    setBeforePhotos([])
+    setAfterPhotos([])
+    setVoicePath('')
+    setDescription('')
+    setReport(initialReport)
+    Taro.removeStorageSync('ganwanleServiceOrderId')
+  }, [authStatus])
   const setServiceOrderId = (value: string) => { setServiceOrderIdState(value); value ? Taro.setStorageSync('ganwanleServiceOrderId', value) : Taro.removeStorageSync('ganwanleServiceOrderId') }
   const setGeneratedReport = (value: ApiGeneratedReport | null) => { setGeneratedReportState(value); setReportConfirmed(false) }
   const value = useMemo(() => ({ serviceOrderId, remoteOrder, generatedReport, reportConfirmed, beforePhotos, afterPhotos, voicePath, description, report,

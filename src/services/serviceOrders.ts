@@ -34,7 +34,7 @@ export type ApiServiceOrder = {
 }
 export type CreateOrderPayload = {
   order_no: string; company_name: string; customer_name: string; customer_phone: string
-  service_address: string; service_type: string; technician_name: string; status: OrderStatus
+  service_address: string; service_type: string; status: OrderStatus
 }
 
 export const createServiceOrder = (payload: CreateOrderPayload) => apiRequest<ApiServiceOrder>('/api/v1/service-orders', { method: 'POST', data: payload })

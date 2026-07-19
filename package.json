@@ -4,6 +4,8 @@
   "private": true,
   "description": "干完了——现场服务AI交付系统师傅端原型",
   "scripts": {
+    "test:unit": "vitest run",
+    "test": "npm run test:unit && npm run build:weapp",
     "dev:weapp": "taro build --type weapp --watch",
     "build:weapp": "taro build --type weapp",
     "dev:h5": "taro build --type h5 --watch",
@@ -24,14 +26,17 @@
   },
   "devDependencies": {
     "@babel/preset-react": "^7.24.1",
-    "babel-preset-taro": "4.1.5",
     "@tarojs/cli": "4.1.5",
     "@tarojs/webpack5-runner": "4.1.5",
     "@types/react": "18.3.18",
+    "@types/react-test-renderer": "^18.3.1",
     "@types/webpack-env": "1.18.5",
+    "babel-preset-taro": "4.1.5",
     "react-refresh": "0.14.0",
+    "react-test-renderer": "^18.3.1",
     "sass": "1.83.4",
     "typescript": "5.7.3",
+    "vitest": "^4.1.10",
     "webpack": "5.91.0"
   }
 }
