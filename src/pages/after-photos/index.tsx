@@ -1,25 +1,13 @@
-import Taro from '@tarojs/taro'
-import { Button, View } from '@tarojs/components'
-import StepProgress from '../../components/StepProgress'
-import OrderSummary from '../../components/OrderSummary'
-import PhotoUploader from '../../components/PhotoUploader'
-import { useDelivery } from '../../context/DeliveryContext'
-import { uploadOrderPhoto } from '../../services/serviceOrders'
-import { useState } from 'react'
+import PhotoStepPage from '../../components/PhotoStepPage'
 
 export default function AfterPhotos() {
-  const { serviceOrderId, afterPhotos, setAfterPhotos } = useDelivery()
-  const [uploading, setUploading] = useState(false)
-  const upload = async (paths: string[]) => {
-    if (!serviceOrderId) throw new Error('缺少服务单，请从工作台重新开始')
-    setUploading(true)
-    try {
-      for (const path of paths) await uploadOrderPhoto(serviceOrderId, 'after', path)
-      setAfterPhotos([...afterPhotos, ...paths]); Taro.showToast({ title: '施工后照片已上传', icon: 'success' })
-    } finally { setUploading(false) }
-  }
-  const next = () => afterPhotos.length ? Taro.navigateTo({ url: '/pages/voice/index' }) : Taro.showToast({ title: '请至少添加1张施工后照片', icon: 'none' })
-  return <View className='page'><StepProgress current={1} /><OrderSummary compact /><PhotoUploader label='拍施工后照片' photos={afterPhotos} onChange={setAfterPhotos} onAdd={upload} loading={uploading} />
-    <View className='fixed-actions'><Button className='primary-btn' disabled={uploading} onClick={next}>下一步：说明完成内容</Button></View>
-  </View>
+  return <PhotoStepPage
+    phase='after'
+    step={1}
+    label='拍施工后照片'
+    uploadedTitle='施工后照片已上传'
+    missingTitle='请至少添加1张施工后照片'
+    nextText='下一步：说明完成内容'
+    nextUrl='/pages/voice/index'
+  />
 }

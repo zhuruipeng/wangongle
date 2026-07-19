@@ -118,6 +118,8 @@ describe('DeliveryProvider authenticated persistence', () => {
     expect(currentDelivery.remoteOrder).toBe(order)
     expect(currentDelivery.beforePhotos).toEqual(['http://localhost:8000/files/before.jpg'])
     expect(currentDelivery.afterPhotos).toEqual(['https://cdn.example.com/after.jpg'])
+    expect(currentDelivery.beforePhotoRecords).toEqual(order.before_photos)
+    expect(currentDelivery.afterPhotoRecords).toEqual(order.after_photos)
     expect(currentDelivery.voicePath).toBe('http://localhost:8000/files/audio.mp3')
     expect(currentDelivery.description).toBe('已完成安装')
     expect(currentDelivery.report).toEqual({
