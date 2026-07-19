@@ -3,7 +3,7 @@ import { Button, Input, Text, Textarea, View } from '@tarojs/components'
 import { useEffect, useMemo, useState } from 'react'
 import StepProgress from '../../components/StepProgress'
 import { useDelivery } from '../../context/DeliveryContext'
-import { generateAiOrderReport, saveAiOrderReport, type ApiAiReportMoneyValue, type ApiAiReportSourceValue, type ApiAiServiceReportDraft } from '../../services/serviceOrders'
+import { generateAiOrderReport, saveAiOrderReport, submitOrderAcceptance, type ApiAiReportMoneyValue, type ApiAiReportSourceValue, type ApiAiServiceReportDraft } from '../../services/serviceOrders'
 import './index.scss'
 
 const unknownText = (): ApiAiReportSourceValue => ({ value: null, source: 'unknown' })
@@ -95,11 +95,12 @@ export default function ReportPage() {
     if (!serviceOrderId) return Taro.showToast({ title: '缺少服务单，请从工作台重新开始', icon: 'none' })
     setSaving(true)
     try {
-      const order = await saveAiOrderReport(serviceOrderId, report)
+      await saveAiOrderReport(serviceOrderId, report)
+      const order = await submitOrderAcceptance(serviceOrderId)
       setRemoteOrder(order)
       setAiReport(order.ai_report)
-      Taro.showToast({ title: '报告已保存', icon: 'success' })
-      await Taro.reLaunch({ url: '/pages/workbench/index' })
+      Taro.showToast({ title: '报告已保存，请客户验收', icon: 'success' })
+      await Taro.redirectTo({ url: `/pages/customer-acceptance/index?serviceOrderId=${serviceOrderId}` })
     } catch (error) {
       Taro.showToast({ title: error instanceof Error ? error.message : '报告保存失败', icon: 'none', duration: 3000 })
     } finally {
@@ -164,7 +165,7 @@ export default function ReportPage() {
       <Textarea className='text-area compact' value={report.customer_confirmation_text || ''} placeholder='展示给客户确认的文字' onInput={event => updateTextField('customer_confirmation_text', event.detail.value)} />
     </View>
 
-    <View className='fixed-actions'><Button className='primary-btn' loading={saving} disabled={saving} onClick={saveDraft}>保存报告</Button></View>
+    <View className='fixed-actions'><Button className='primary-btn' loading={saving} disabled={saving} onClick={saveDraft}>{saving ? '正在提交' : '保存并交客户验收'}</Button></View>
   </View>
 }
 

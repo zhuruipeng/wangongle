@@ -98,6 +98,20 @@ describe('authenticated API transport', () => {
     }))
   })
 
+  it('supports a custom multipart file field for signatures', async () => {
+    vi.mocked(Taro.uploadFile).mockResolvedValueOnce({
+      statusCode: 201,
+      data: JSON.stringify({ status: 'accepted' })
+    } as never)
+
+    await uploadFile('/api/v1/service-orders/order-1/acceptance', '/tmp/signature.png', { accepted: 'true' }, 'signature')
+
+    expect(Taro.uploadFile).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'signature',
+      formData: { accepted: 'true' }
+    }))
+  })
+
   it.each(['', '<html>unauthorized</html>'])('refreshes an upload when the first 401 body is non-JSON: %j', async unauthorizedBody => {
     vi.mocked(Taro.uploadFile)
       .mockResolvedValueOnce({ statusCode: 401, data: unauthorizedBody } as never)

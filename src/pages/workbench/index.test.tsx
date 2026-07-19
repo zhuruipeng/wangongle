@@ -12,7 +12,7 @@ vi.mock('@tarojs/taro', () => ({
   default: { navigateTo: vi.fn(), showToast: vi.fn() },
   useDidShow: vi.fn((callback: () => void | Promise<void>) => { taroHooks.didShow = callback })
 }))
-vi.mock('@tarojs/components', () => ({ Button: 'button', Text: 'text', View: 'view' }))
+vi.mock('@tarojs/components', () => ({ Button: 'button', Input: 'input', Text: 'text', View: 'view' }))
 vi.mock('../../context/AuthContext', () => ({ useAuth: vi.fn() }))
 vi.mock('../../context/DeliveryContext', () => ({ useDelivery: vi.fn() }))
 vi.mock('../../services/serviceOrders', () => ({ createServiceOrder: vi.fn(), listServiceOrders: vi.fn() }))
@@ -43,6 +43,14 @@ describe('Workbench identity and orders', () => {
     vi.mocked(Taro.navigateTo).mockResolvedValue({ errMsg: 'navigateTo:ok' })
   })
 
+  const fillDraft = async (renderer: ReturnType<typeof create>) => {
+    const values = ['安心空调服务', '李先生', '13900001111', '临沂市兰山区测试路1号', '空调维修']
+    const inputs = renderer.root.findAllByType('input')
+    for (let index = 0; index < inputs.length; index += 1) {
+      await act(async () => inputs[index].props.onInput({ detail: { value: values[index] } }))
+    }
+  }
+
   it('loads only the authenticated API order list when shown', async () => {
     vi.mocked(listServiceOrders).mockResolvedValue([order] as never)
 
@@ -55,6 +63,16 @@ describe('Workbench identity and orders', () => {
     expect(JSON.stringify(renderer.toJSON())).toContain('王先生')
   })
 
+  it('requires complete customer and service details before creation', async () => {
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<Workbench />) })
+    await act(async () => { await taroHooks.didShow?.() })
+    await act(async () => renderer.root.findByType('button').props.onClick())
+
+    expect(createServiceOrder).not.toHaveBeenCalled()
+    expect(Taro.showToast).toHaveBeenCalledWith({ title: '请完整填写服务单资料', icon: 'none' })
+  })
+
   it('creates with a unique order number and no client-supplied technician name', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1721347200123)
     vi.spyOn(Math, 'random').mockReturnValue(0.123456789)
@@ -63,10 +81,18 @@ describe('Workbench identity and orders', () => {
     let renderer!: ReturnType<typeof create>
     await act(async () => { renderer = create(<Workbench />) })
     await act(async () => { await taroHooks.didShow?.() })
+    await fillDraft(renderer)
     await act(async () => renderer.root.findByType('button').props.onClick())
 
     expect(createServiceOrder).toHaveBeenCalledWith(expect.objectContaining({
       order_no: expect.stringMatching(/^GW-1721347200123-[A-Z0-9]+$/)
+    }))
+    expect(createServiceOrder).toHaveBeenCalledWith(expect.objectContaining({
+      company_name: '安心空调服务',
+      customer_name: '李先生',
+      customer_phone: '13900001111',
+      service_address: '临沂市兰山区测试路1号',
+      service_type: '空调维修'
     }))
     expect(createServiceOrder).toHaveBeenCalledWith(expect.not.objectContaining({ technician_name: expect.anything() }))
   })
@@ -77,6 +103,7 @@ describe('Workbench identity and orders', () => {
     let renderer!: ReturnType<typeof create>
     await act(async () => { renderer = create(<Workbench />) })
     await act(async () => { await taroHooks.didShow?.() })
+    await fillDraft(renderer)
     vi.mocked(listServiceOrders).mockClear()
     await act(async () => renderer.root.findByType('button').props.onClick())
 

@@ -40,6 +40,10 @@ export type ApiAiServiceReportDraft = {
   needs_confirmation: string[]
 }
 export type GenerateAiReportResult = { status: 'succeeded'; report: ApiAiServiceReportDraft; model: string }
+export type ApiAcceptance = {
+  status: 'accepted'
+  acceptance: { id: string; accepted_at: string; signature_url: string }
+}
 export type ApiServiceOrder = {
   id: string; order_no: string; company_name: string; customer_name: string; customer_phone: string
   service_address: string; service_type: string; technician_name: string; status: OrderStatus
@@ -69,3 +73,5 @@ export const generateAiOrderReport = (id: string, manualText = '', force = false
 export const saveOrderReport = (id: string, report: ApiReport) => apiRequest<ApiServiceOrder>(`/api/v1/service-orders/${id}/report`, { method: 'PUT', data: report })
 export const saveAiOrderReport = (id: string, report: ApiAiServiceReportDraft) => apiRequest<ApiServiceOrder>(`/api/v1/service-orders/${id}/ai-report`, { method: 'PUT', data: report })
 export const submitOrderAcceptance = (id: string) => apiRequest<ApiServiceOrder>(`/api/v1/service-orders/${id}/submit-acceptance`, { method: 'POST' })
+export const acceptServiceOrder = (id: string, signaturePath: string) =>
+  uploadFile<ApiAcceptance>(`/api/v1/service-orders/${id}/acceptance`, signaturePath, { accepted: 'true' }, 'signature')

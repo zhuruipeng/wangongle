@@ -70,17 +70,23 @@ async function authenticatedRequest<T>(path: string, options: RequestOptions, re
   return response.data
 }
 
-export async function uploadFile<T>(path: string, filePath: string, formData?: Record<string, string>): Promise<T> {
-  return authenticatedUpload<T>(path, filePath, formData, false)
+export async function uploadFile<T>(path: string, filePath: string, formData?: Record<string, string>, fileField = 'file'): Promise<T> {
+  return authenticatedUpload<T>(path, filePath, formData, fileField, false)
 }
 
-async function authenticatedUpload<T>(path: string, filePath: string, formData: Record<string, string> | undefined, retried: boolean): Promise<T> {
+async function authenticatedUpload<T>(
+  path: string,
+  filePath: string,
+  formData: Record<string, string> | undefined,
+  fileField: string,
+  retried: boolean
+): Promise<T> {
   let response: Taro.uploadFile.SuccessCallbackResult
   try {
     response = await Taro.uploadFile({
       url: `${API_BASE_URL}${path}`,
       filePath,
-      name: 'file',
+      name: fileField,
       formData,
       header: authHeader(),
       timeout: 30000
@@ -90,7 +96,7 @@ async function authenticatedUpload<T>(path: string, filePath: string, formData: 
   }
   if (response.statusCode === 401 && !NON_REFRESHABLE_AUTH_PATHS.has(path.split('?')[0])) {
     await recoverUnauthorized(retried)
-    if (!retried) return authenticatedUpload(path, filePath, formData, true)
+    if (!retried) return authenticatedUpload(path, filePath, formData, fileField, true)
   }
   let body: { detail?: string } & Partial<T> = {}
   try {

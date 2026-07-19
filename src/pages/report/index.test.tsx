@@ -2,14 +2,14 @@ import Taro from '@tarojs/taro'
 import { act, create } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useDelivery } from '../../context/DeliveryContext'
-import { generateAiOrderReport, saveAiOrderReport, type ApiAiServiceReportDraft } from '../../services/serviceOrders'
+import { generateAiOrderReport, saveAiOrderReport, submitOrderAcceptance, type ApiAiServiceReportDraft } from '../../services/serviceOrders'
 import ReportPage from './index'
 
-vi.mock('@tarojs/taro', () => ({ default: { showToast: vi.fn(), reLaunch: vi.fn() } }))
+vi.mock('@tarojs/taro', () => ({ default: { showToast: vi.fn(), redirectTo: vi.fn() } }))
 vi.mock('@tarojs/components', () => ({ Button: 'button', Input: 'input', Text: 'text', Textarea: 'textarea', View: 'view' }))
 vi.mock('../../components/StepProgress', () => ({ default: () => null }))
 vi.mock('../../context/DeliveryContext', () => ({ useDelivery: vi.fn() }))
-vi.mock('../../services/serviceOrders', () => ({ generateAiOrderReport: vi.fn(), saveAiOrderReport: vi.fn() }))
+vi.mock('../../services/serviceOrders', () => ({ generateAiOrderReport: vi.fn(), saveAiOrderReport: vi.fn(), submitOrderAcceptance: vi.fn() }))
 vi.mock('./index.scss', () => ({}))
 
 const report: ApiAiServiceReportDraft = {
@@ -54,7 +54,7 @@ describe('ReportPage AI report V1', () => {
     expect(setAiReport).toHaveBeenCalledWith(report)
   })
 
-  it('saves the edited report and returns to the workbench', async () => {
+  it('saves the edited report and opens customer acceptance', async () => {
     vi.mocked(useDelivery).mockReturnValue({
       serviceOrderId: 'order-1',
       remoteOrder: { id: 'order-1', service_type: '空调安装', transcript: '完成空调安装。', ai_report: null },
@@ -64,13 +64,15 @@ describe('ReportPage AI report V1', () => {
       description: '完成空调安装。'
     } as never)
     vi.mocked(saveAiOrderReport).mockResolvedValue({ id: 'order-1', ai_report: report } as never)
+    vi.mocked(submitOrderAcceptance).mockResolvedValue({ id: 'order-1', status: 'waiting_acceptance', ai_report: report } as never)
     const renderer = create(<ReportPage />)
     const buttons = renderer.root.findAllByType('button')
 
     await act(async () => buttons[buttons.length - 1].props.onClick())
 
     expect(saveAiOrderReport).toHaveBeenCalledWith('order-1', report)
-    expect(setRemoteOrder).toHaveBeenCalledWith({ id: 'order-1', ai_report: report })
-    expect(Taro.reLaunch).toHaveBeenCalledWith({ url: '/pages/workbench/index' })
+    expect(submitOrderAcceptance).toHaveBeenCalledWith('order-1')
+    expect(setRemoteOrder).toHaveBeenCalledWith({ id: 'order-1', status: 'waiting_acceptance', ai_report: report })
+    expect(Taro.redirectTo).toHaveBeenCalledWith({ url: '/pages/customer-acceptance/index?serviceOrderId=order-1' })
   })
 })
