@@ -19,6 +19,15 @@ function readableError(error: unknown): string {
   return error instanceof Error ? error.message : '微信登录失败，请重试'
 }
 
+function isCustomerShareLaunch(): boolean {
+  try {
+    const launch = Taro.getLaunchOptionsSync()
+    return launch.path === 'pages/customer-acceptance/index' && Boolean(launch.query?.shareToken)
+  } catch {
+    return false
+  }
+}
+
 export function AuthProvider({ children }: PropsWithChildren) {
   const [status, setStatus] = useState<AuthStatus>('loading')
   const [user, setUser] = useState<AuthUser | null>(null)
@@ -41,9 +50,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
       }
       setUser(authenticatedUser)
       setStatus('authenticated')
-      if (!authenticatedUser.profile_complete) {
-        void Taro.reLaunch({ url: '/pages/profile/index' })
-      }
     } catch (authError) {
       clearSession()
       setUser(null)
@@ -53,6 +59,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }, [])
 
   useEffect(() => {
+    if (isCustomerShareLaunch()) {
+      setStatus('anonymous')
+      return
+    }
     void authenticate()
   }, [authenticate])
 

@@ -5,7 +5,9 @@ import { apiRequest } from '../services/api'
 import { getAccessToken, loginWithWechat } from '../services/session'
 import { AuthProvider, useAuth, type AuthContextValue } from './AuthContext'
 
-vi.mock('@tarojs/taro', () => ({ default: { reLaunch: vi.fn() } }))
+vi.mock('@tarojs/taro', () => ({
+  default: { getLaunchOptionsSync: vi.fn(() => ({ path: 'pages/login/index', query: {} })) }
+}))
 vi.mock('../services/api', () => ({ apiRequest: vi.fn() }))
 vi.mock('../services/session', () => ({
   clearSession: vi.fn(),
@@ -30,6 +32,7 @@ describe('AuthProvider', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     currentAuth = null
+    vi.mocked(Taro.getLaunchOptionsSync).mockReturnValue({ path: 'pages/login/index', query: {} } as never)
     vi.mocked(getAccessToken).mockReturnValue('')
   })
 
@@ -69,14 +72,26 @@ describe('AuthProvider', () => {
     expect(currentAuth).toMatchObject({ status: 'authenticated', user, error: '' })
   })
 
-  it('gates an incomplete profile with a reLaunch to the profile page', async () => {
+  it('keeps an incomplete user authenticated so shared customer pages can remain open', async () => {
     const user = { id: 'user-1', technician_name: null, role: 'technician' as const, profile_complete: false }
     vi.mocked(loginWithWechat).mockResolvedValue({ access_token: 'access', refresh_token: 'refresh', user })
 
     await renderProvider()
 
     expect(currentAuth).toMatchObject({ status: 'authenticated', user })
-    expect(Taro.reLaunch).toHaveBeenCalledWith({ url: '/pages/profile/index' })
+  })
+
+  it('skips technician authentication on a cold customer share launch', async () => {
+    vi.mocked(Taro.getLaunchOptionsSync).mockReturnValue({
+      path: 'pages/customer-acceptance/index',
+      query: { shareToken: 'customer-token' }
+    } as never)
+
+    await renderProvider()
+
+    expect(loginWithWechat).not.toHaveBeenCalled()
+    expect(apiRequest).not.toHaveBeenCalled()
+    expect(currentAuth).toMatchObject({ status: 'anonymous', user: null, error: '' })
   })
 
   it('exposes an anonymous error state and can retry login', async () => {

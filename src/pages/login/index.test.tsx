@@ -35,4 +35,16 @@ describe('LoginPage', () => {
 
     expect(Taro.reLaunch).toHaveBeenCalledWith({ url: '/pages/workbench/index' })
   })
+
+  it('reLaunches the profile page when technician identity is incomplete', async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      status: 'authenticated',
+      user: { id: 'user-2', technician_name: null, role: 'technician', profile_complete: false },
+      error: '', retry: vi.fn(), setUser: vi.fn()
+    })
+
+    await act(async () => { create(<LoginPage />) })
+
+    expect(Taro.reLaunch).toHaveBeenCalledWith({ url: '/pages/profile/index' })
+  })
 })

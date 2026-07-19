@@ -9,7 +9,8 @@ from uuid import uuid4
 import warnings
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+import jwt
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -31,6 +32,8 @@ from ..schemas import (
     AiReportGenerateResponse,
     AiServiceReportDraft,
     AudioResponse,
+    CustomerSharedOrderResponse,
+    CustomerShareResponse,
     FeeItem,
     GenerateReportResponse,
     GeneratedServiceReport,
@@ -42,7 +45,12 @@ from ..schemas import (
     ServiceOrderResponse,
     TranscriptionResponse,
 )
-from ..security import get_current_user
+from ..security import (
+    CUSTOMER_SHARE_TOKEN_DAYS,
+    create_customer_share_token,
+    decode_customer_share_token,
+    get_current_user,
+)
 from ..services.ai_report_generator import generate_ai_service_report
 from ..services.report_generator import ReportGenerationError, generate_service_report
 from ..services.speech_to_text import SpeechToTextError, transcribe_audio
@@ -69,6 +77,7 @@ SAFE_AUDIO_PERSISTENCE_ERROR = "录音处理状态保存失败，请稍后重试
 SAFE_AUDIO_PRESIGN_ERROR = "录音授权失败，请稍后重试"
 SAFE_TRANSCRIPTION_CONFLICT = "录音正在处理或已完成转写"
 SAFE_ACCEPTANCE_PERSISTENCE_ERROR = "验收状态保存失败，请稍后重试"
+INVALID_CUSTOMER_SHARE_DETAIL = "客户验收链接无效或已过期"
 
 
 def get_order_or_404(db: Session, user_id: str, order_id: str) -> ServiceOrder:
@@ -80,6 +89,23 @@ def get_order_or_404(db: Session, user_id: str, order_id: str) -> ServiceOrder:
     )
     if order is None:
         raise HTTPException(status_code=404, detail="服务单不存在")
+    return order
+
+
+def get_shared_order_or_404(db: Session, share_token: str) -> ServiceOrder:
+    try:
+        order_id, owner_user_id = decode_customer_share_token(share_token)
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=404, detail=INVALID_CUSTOMER_SHARE_DETAIL) from None
+    order = db.scalar(
+        select(ServiceOrder).where(
+            ServiceOrder.id == order_id,
+            ServiceOrder.owner_user_id == owner_user_id,
+            ServiceOrder.status.in_(("waiting_acceptance", "accepted")),
+        )
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail=INVALID_CUSTOMER_SHARE_DETAIL)
     return order
 
 
@@ -260,6 +286,20 @@ def photo_response(photo: ServiceOrderPhoto, storage: StorageBackend) -> PhotoRe
     )
 
 
+def shared_photo_response(photo: ServiceOrderPhoto, share_token: str) -> PhotoResponse:
+    return PhotoResponse(
+        id=photo.id,
+        phase=photo.phase,
+        file_url=f"/api/v1/service-orders/customer-share/{share_token}/photos/{photo.id}",
+        original_filename=photo.original_filename,
+        content_type=photo.content_type or "application/octet-stream",
+        size_bytes=photo.size_bytes or 0,
+        sha256=photo.sha256 or "",
+        sort_order=photo.sort_order,
+        created_at=photo.created_at,
+    )
+
+
 def order_response(order: ServiceOrder) -> ServiceOrderResponse:
     storage = get_storage()
     photos = sorted(order.photos, key=lambda item: (item.phase, item.sort_order, item.created_at))
@@ -286,6 +326,33 @@ def order_response(order: ServiceOrder) -> ServiceOrderResponse:
         before_photos=[photo_response(item, storage) for item in photos if item.phase == "before"],
         after_photos=[photo_response(item, storage) for item in photos if item.phase == "after"],
         created_at=order.created_at, updated_at=order.updated_at,
+    )
+
+
+def customer_shared_order_response(
+    order: ServiceOrder,
+    share_token: str,
+) -> CustomerSharedOrderResponse:
+    photos = sorted(order.photos, key=lambda item: (item.phase, item.sort_order, item.created_at))
+    return CustomerSharedOrderResponse(
+        id=order.id,
+        order_no=order.order_no,
+        company_name=order.company_name,
+        customer_name=order.customer_name,
+        service_address=order.service_address,
+        service_type=order.service_type,
+        technician_name=order.technician_name,
+        status=order.status,
+        report=report_from_order(order),
+        ai_report=ai_report_from_order(order),
+        total_amount_cents=order.total_amount_cents,
+        paid_amount_cents=order.paid_amount_cents,
+        before_photos=[
+            shared_photo_response(item, share_token) for item in photos if item.phase == "before"
+        ],
+        after_photos=[
+            shared_photo_response(item, share_token) for item in photos if item.phase == "after"
+        ],
     )
 
 
@@ -1067,16 +1134,77 @@ def submit_acceptance(
     return order_response(order)
 
 
-@router.post("/{order_id}/acceptance", response_model=AcceptanceResponse, status_code=201)
-async def accept_service_order(
+@router.post("/{order_id}/customer-share", response_model=CustomerShareResponse)
+def create_customer_share(
     order_id: str,
     request: Request,
-    accepted: str = Form(...),
-    signature: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     order = get_order_or_404(db, current_user.id, order_id)
+    if order.status not in {"waiting_acceptance", "accepted"}:
+        raise HTTPException(status_code=409, detail="请先提交客户验收")
+    share_token = create_customer_share_token(order.id, current_user.id)
+    add_audit(db, request, current_user, order.id, "customer_share_created", "succeeded")
+    db.commit()
+    return CustomerShareResponse(
+        share_token=share_token,
+        expires_in=CUSTOMER_SHARE_TOKEN_DAYS * 24 * 60 * 60,
+    )
+
+
+@router.get(
+    "/customer-share/{share_token}",
+    response_model=CustomerSharedOrderResponse,
+)
+def get_customer_shared_order(
+    share_token: str,
+    db: Session = Depends(get_db),
+):
+    return customer_shared_order_response(
+        get_shared_order_or_404(db, share_token),
+        share_token,
+    )
+
+
+@router.get(
+    "/customer-share/{share_token}/photos/{photo_id}",
+    include_in_schema=False,
+)
+def get_customer_shared_photo(
+    share_token: str,
+    photo_id: str,
+    db: Session = Depends(get_db),
+):
+    order = get_shared_order_or_404(db, share_token)
+    photo = db.scalar(
+        select(ServiceOrderPhoto).where(
+            ServiceOrderPhoto.id == photo_id,
+            ServiceOrderPhoto.service_order_id == order.id,
+        )
+    )
+    if photo is None or not photo.object_key:
+        raise HTTPException(status_code=404, detail="照片不存在")
+    storage = get_storage()
+    if isinstance(storage, LocalStorage):
+        try:
+            path = storage.resolve_key(photo.object_key)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="照片不存在") from None
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="照片不存在")
+        return FileResponse(path, media_type=photo.content_type)
+    try:
+        target = storage.presigned_get_url(
+            photo.object_key,
+            get_storage_settings().presigned_seconds,
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="照片读取失败，请稍后重试") from None
+    return RedirectResponse(target)
+
+
+def ensure_order_can_be_accepted(db: Session, order: ServiceOrder, accepted: str) -> None:
     existing = db.scalar(
         select(CustomerAcceptance).where(CustomerAcceptance.service_order_id == order.id)
     )
@@ -1087,13 +1215,20 @@ async def accept_service_order(
     if accepted != "true":
         raise HTTPException(status_code=422, detail="请确认验收结果")
 
-    upload = await read_validated_upload(signature, SIGNATURE_TYPES, 5 * 1024 * 1024)
-    validate_signature_content(upload)
+
+def persist_acceptance(
+    db: Session,
+    request: Request,
+    order: ServiceOrder,
+    owner: User,
+    upload: ValidatedUpload,
+    event_type: str,
+) -> AcceptanceResponse:
     storage = get_storage()
     storage_settings = get_storage_settings()
     object_key = build_object_key(
         storage_settings.environment,
-        current_user.id,
+        owner.id,
         order.id,
         "signatures",
         upload.suffix,
@@ -1123,7 +1258,7 @@ async def accept_service_order(
             update(ServiceOrder)
             .where(
                 ServiceOrder.id == order.id,
-                ServiceOrder.owner_user_id == current_user.id,
+                ServiceOrder.owner_user_id == owner.id,
                 ServiceOrder.status == "waiting_acceptance",
             )
             .values(status="accepted", updated_at=datetime.now(timezone.utc))
@@ -1131,7 +1266,7 @@ async def accept_service_order(
         if transitioned.rowcount != 1:
             raise HTTPException(status_code=409, detail="服务单状态已变更")
         db.add(acceptance)
-        add_audit(db, request, current_user, order.id, "acceptance", "succeeded")
+        add_audit(db, request, owner, order.id, event_type, "succeeded")
         db.flush()
     except HTTPException:
         db.rollback()
@@ -1166,4 +1301,49 @@ async def accept_service_order(
             accepted_at=accepted_at,
             signature_url=signature_url,
         ),
+    )
+
+
+@router.post("/{order_id}/acceptance", response_model=AcceptanceResponse, status_code=201)
+async def accept_service_order(
+    order_id: str,
+    request: Request,
+    accepted: str = Form(...),
+    signature: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    order = get_order_or_404(db, current_user.id, order_id)
+    ensure_order_can_be_accepted(db, order, accepted)
+    upload = await read_validated_upload(signature, SIGNATURE_TYPES, 5 * 1024 * 1024)
+    validate_signature_content(upload)
+    return persist_acceptance(db, request, order, current_user, upload, "acceptance")
+
+
+@router.post(
+    "/customer-share/{share_token}/acceptance",
+    response_model=AcceptanceResponse,
+    status_code=201,
+)
+async def accept_customer_shared_order(
+    share_token: str,
+    request: Request,
+    accepted: str = Form(...),
+    signature: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    order = get_shared_order_or_404(db, share_token)
+    ensure_order_can_be_accepted(db, order, accepted)
+    owner = db.get(User, order.owner_user_id)
+    if owner is None or owner.status != "active":
+        raise HTTPException(status_code=404, detail=INVALID_CUSTOMER_SHARE_DETAIL)
+    upload = await read_validated_upload(signature, SIGNATURE_TYPES, 5 * 1024 * 1024)
+    validate_signature_content(upload)
+    return persist_acceptance(
+        db,
+        request,
+        order,
+        owner,
+        upload,
+        "customer_share_acceptance",
     )

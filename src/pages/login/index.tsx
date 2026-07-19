@@ -8,8 +8,10 @@ export default function LoginPage() {
   const { status, user, error, retry } = useAuth()
 
   useEffect(() => {
-    if (status === 'authenticated' && user?.profile_complete) {
-      void Taro.reLaunch({ url: '/pages/workbench/index' })
+    if (status === 'authenticated' && user) {
+      void Taro.reLaunch({
+        url: user.profile_complete ? '/pages/workbench/index' : '/pages/profile/index'
+      })
     }
   }, [status, user])
 

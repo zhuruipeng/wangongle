@@ -1,6 +1,6 @@
 import Taro from '@tarojs/taro'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { apiRequest, uploadFile } from './api'
+import { apiRequest, publicApiRequest, publicUploadFile, uploadFile } from './api'
 import { clearSession, getAccessToken, refreshSession } from './session'
 
 vi.mock('@tarojs/taro', () => ({
@@ -98,6 +98,17 @@ describe('authenticated API transport', () => {
     }))
   })
 
+  it('keeps public customer requests independent from technician sessions', async () => {
+    vi.mocked(Taro.request).mockResolvedValueOnce({ statusCode: 200, data: { id: 'order-1' } } as never)
+
+    await publicApiRequest('/api/v1/service-orders/customer-share/token')
+
+    expect(Taro.request).toHaveBeenCalledWith(expect.objectContaining({
+      header: { 'content-type': 'application/json' }
+    }))
+    expect(refreshSession).not.toHaveBeenCalled()
+  })
+
   it('supports a custom multipart file field for signatures', async () => {
     vi.mocked(Taro.uploadFile).mockResolvedValueOnce({
       statusCode: 201,
@@ -110,6 +121,26 @@ describe('authenticated API transport', () => {
       name: 'signature',
       formData: { accepted: 'true' }
     }))
+  })
+
+  it('uploads a shared customer signature without a Bearer header', async () => {
+    vi.mocked(Taro.uploadFile).mockResolvedValueOnce({
+      statusCode: 201,
+      data: JSON.stringify({ status: 'accepted' })
+    } as never)
+
+    await publicUploadFile(
+      '/api/v1/service-orders/customer-share/token/acceptance',
+      '/tmp/signature.png',
+      { accepted: 'true' },
+      'signature'
+    )
+
+    expect(Taro.uploadFile).toHaveBeenCalledWith(expect.objectContaining({
+      header: {},
+      name: 'signature'
+    }))
+    expect(refreshSession).not.toHaveBeenCalled()
   })
 
   it.each(['', '<html>unauthorized</html>'])('refreshes an upload when the first 401 body is non-JSON: %j', async unauthorizedBody => {

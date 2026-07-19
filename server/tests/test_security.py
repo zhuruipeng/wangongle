@@ -3,7 +3,14 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import pytest
 
-from server.security import create_access_token, decode_access_token, digest_refresh_token, generate_refresh_token
+from server.security import (
+    create_access_token,
+    create_customer_share_token,
+    decode_access_token,
+    decode_customer_share_token,
+    digest_refresh_token,
+    generate_refresh_token,
+)
 from server.settings import get_auth_settings
 
 
@@ -20,6 +27,34 @@ def test_access_token_defaults_to_two_hours(monkeypatch) -> None:
     claims = jwt.decode(token, secret, algorithms=["HS256"])
     assert claims["type"] == "access"
     assert claims["exp"] - claims["iat"] == 120 * 60
+
+
+def test_customer_share_token_round_trip_and_default_lifetime(monkeypatch) -> None:
+    secret = "test-secret-that-is-long-enough-for-tests"
+    monkeypatch.setenv("JWT_SECRET", secret)
+    token = create_customer_share_token("order-1", "owner-1")
+    claims = jwt.decode(token, secret, algorithms=["HS256"])
+
+    assert decode_customer_share_token(token) == ("order-1", "owner-1")
+    assert claims["type"] == "customer_share"
+    assert claims["exp"] - claims["iat"] == 30 * 24 * 60 * 60
+
+
+def test_customer_share_decoder_rejects_access_tokens(monkeypatch) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-secret-that-is-long-enough-for-tests")
+    with pytest.raises(jwt.InvalidTokenError):
+        decode_customer_share_token(create_access_token("order-1"))
+
+
+def test_customer_share_decoder_rejects_expired_tokens(monkeypatch) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-secret-that-is-long-enough-for-tests")
+    token = create_customer_share_token(
+        "order-1",
+        "owner-1",
+        expires_delta=timedelta(seconds=-1),
+    )
+    with pytest.raises(jwt.ExpiredSignatureError):
+        decode_customer_share_token(token)
 
 
 def access_token_missing(secret: str, missing_claim: str) -> str:

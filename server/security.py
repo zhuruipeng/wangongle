@@ -13,6 +13,7 @@ from .models import User
 from .settings import AuthSettings, get_auth_settings
 
 ALGORITHM = "HS256"
+CUSTOMER_SHARE_TOKEN_DAYS = 30
 INVALID_AUTH_DETAIL = "未登录或登录已失效"
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -46,6 +47,49 @@ def decode_access_token(token: str, settings: Optional[AuthSettings] = None) -> 
     if claims.get("type") != "access" or not isinstance(subject, str) or not subject:
         raise jwt.InvalidTokenError("invalid access token")
     return subject
+
+
+def create_customer_share_token(
+    order_id: str,
+    owner_user_id: str,
+    expires_delta: Optional[timedelta] = None,
+    settings: Optional[AuthSettings] = None,
+) -> str:
+    auth_settings = settings or get_auth_settings()
+    now = int(datetime.now(timezone.utc).timestamp())
+    lifetime = expires_delta or timedelta(days=CUSTOMER_SHARE_TOKEN_DAYS)
+    payload = {
+        "sub": order_id,
+        "owner": owner_user_id,
+        "iat": now,
+        "exp": now + int(lifetime.total_seconds()),
+        "type": "customer_share",
+    }
+    return jwt.encode(payload, auth_settings.jwt_secret, algorithm=ALGORITHM)
+
+
+def decode_customer_share_token(
+    token: str,
+    settings: Optional[AuthSettings] = None,
+) -> tuple[str, str]:
+    auth_settings = settings or get_auth_settings()
+    claims = jwt.decode(
+        token,
+        auth_settings.jwt_secret,
+        algorithms=[ALGORITHM],
+        options={"require": ["sub", "owner", "iat", "exp", "type"]},
+    )
+    order_id = claims.get("sub")
+    owner_user_id = claims.get("owner")
+    if (
+        claims.get("type") != "customer_share"
+        or not isinstance(order_id, str)
+        or not order_id
+        or not isinstance(owner_user_id, str)
+        or not owner_user_id
+    ):
+        raise jwt.InvalidTokenError("invalid customer share token")
+    return order_id, owner_user_id
 
 
 def generate_refresh_token() -> str:

@@ -234,6 +234,28 @@ class ServiceOrderResponse(BaseModel):
     updated_at: datetime
 
 
+class CustomerShareResponse(BaseModel):
+    share_token: str
+    expires_in: int
+
+
+class CustomerSharedOrderResponse(BaseModel):
+    id: str
+    order_no: str
+    company_name: str
+    customer_name: str
+    service_address: str
+    service_type: str
+    technician_name: str
+    status: Literal["waiting_acceptance", "accepted"]
+    report: Optional[ReportPayload]
+    ai_report: Optional[AiServiceReportDraft]
+    total_amount_cents: int
+    paid_amount_cents: int
+    before_photos: list[PhotoResponse]
+    after_photos: list[PhotoResponse]
+
+
 class AudioResponse(BaseModel):
     audio_url: str
 

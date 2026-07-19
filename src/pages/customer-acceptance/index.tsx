@@ -1,10 +1,18 @@
-import Taro, { getCurrentInstance, useLoad } from '@tarojs/taro'
+import Taro, { getCurrentInstance, useLoad, useShareAppMessage } from '@tarojs/taro'
 import { Button, Checkbox, CheckboxGroup, Image, Text, View } from '@tarojs/components'
 import { useState } from 'react'
 import SignaturePad from '../../components/SignaturePad'
 import { useDelivery } from '../../context/DeliveryContext'
 import { absoluteFileUrl } from '../../services/api'
-import { acceptServiceOrder, getServiceOrder, type ApiServiceOrder } from '../../services/serviceOrders'
+import {
+  acceptCustomerSharedOrder,
+  acceptServiceOrder,
+  createCustomerShare,
+  getCustomerSharedOrder,
+  getServiceOrder,
+  type ApiCustomerSharedOrder,
+  type ApiServiceOrder
+} from '../../services/serviceOrders'
 import './index.scss'
 
 const money = (value: string) => Number(value) || 0
@@ -28,7 +36,9 @@ const emptyReport: AcceptanceReport = {
   afterSales: ''
 }
 
-function reportFromOrder(order: ApiServiceOrder | null): AcceptanceReport {
+type AcceptanceOrder = ApiServiceOrder | ApiCustomerSharedOrder
+
+function reportFromOrder(order: AcceptanceOrder | null): AcceptanceReport {
   if (!order) return emptyReport
   if (order.report) {
     return {
@@ -73,9 +83,44 @@ export default function CustomerAcceptance() {
   const [accepted, setAccepted] = useState(false)
   const [signed, setSigned] = useState(false)
   const [finishedAt, setFinishedAt] = useState('')
+  const [sharedOrder, setSharedOrder] = useState<ApiCustomerSharedOrder | null>(null)
+  const [sharedMode, setSharedMode] = useState(false)
+  const [shareToken, setShareToken] = useState('')
+  const [shareLoading, setShareLoading] = useState(false)
+  const [shareError, setShareError] = useState('')
+
+  const prepareShare = async (id: string) => {
+    setShareLoading(true)
+    setShareError('')
+    try {
+      const result = await createCustomerShare(id)
+      setShareToken(result.share_token)
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : '转发卡片准备失败')
+    } finally {
+      setShareLoading(false)
+    }
+  }
+
   useLoad(() => {
     setCompletedAt(formatTime(new Date()))
-    const queryId = getCurrentInstance().router?.params?.serviceOrderId
+    const params = getCurrentInstance().router?.params
+    const customerToken = params?.shareToken
+    if (customerToken) {
+      setSharedMode(true)
+      setShareToken(customerToken)
+      setLoading(true)
+      setLoadError('')
+      getCustomerSharedOrder(customerToken)
+        .then(order => {
+          setSharedOrder(order)
+          setOrderId(order.id)
+        })
+        .catch(error => setLoadError(error instanceof Error ? error.message : '客户验收单加载失败'))
+        .finally(() => setLoading(false))
+      return
+    }
+    const queryId = params?.serviceOrderId
     const id = queryId || delivery.serviceOrderId
     if (!id) {
       setLoadError('缺少服务单，请让师傅重新提交验收')
@@ -84,12 +129,15 @@ export default function CustomerAcceptance() {
     setOrderId(id)
     delivery.setServiceOrderId(id); setLoading(true); setLoadError('')
     getServiceOrder(id)
-      .then(order => delivery.selectServiceOrder(order))
+      .then(order => {
+        delivery.selectServiceOrder(order)
+        void prepareShare(order.id)
+      })
       .catch(error => setLoadError(error instanceof Error ? error.message : '服务单加载失败'))
       .finally(() => setLoading(false))
   })
 
-  const remote = delivery.remoteOrder
+  const remote: AcceptanceOrder | null = sharedMode ? sharedOrder : delivery.remoteOrder
   const report = reportFromOrder(remote)
   const orderInfo = remote
     ? { orderNo: remote.order_no, customer: remote.customer_name, address: remote.service_address, service: remote.service_type, technician: remote.technician_name, company: remote.company_name }
@@ -100,6 +148,11 @@ export default function CustomerAcceptance() {
   const total = money(report.serviceFee) + money(report.materialFee)
   const due = Math.max(0, total - money(report.paid))
   const finished = remote?.status === 'accepted' || Boolean(finishedAt)
+  useShareAppMessage(() => ({
+    title: `${orderInfo.company}服务单，请您确认验收`,
+    path: `/pages/customer-acceptance/index?shareToken=${encodeURIComponent(shareToken)}`
+  }))
+
   const confirm = async () => {
     if (submitting || finished) return
     if (!orderId || !remote || loadError) return Taro.showToast({ title: '服务单尚未加载完成', icon: 'none' })
@@ -109,10 +162,16 @@ export default function CustomerAcceptance() {
     try {
       const exported = await Taro.canvasToTempFilePath({ canvasId: 'customerSignature', fileType: 'png', quality: 1 })
       if (!exported.tempFilePath) throw new Error('签名图片生成失败，请重新签名')
-      const result = await acceptServiceOrder(orderId, exported.tempFilePath)
+      const result = sharedMode
+        ? await acceptCustomerSharedOrder(shareToken, exported.tempFilePath)
+        : await acceptServiceOrder(orderId, exported.tempFilePath)
       const acceptedAt = new Date(result.acceptance.accepted_at)
       setFinishedAt(formatTime(Number.isNaN(acceptedAt.getTime()) ? new Date() : acceptedAt))
-      delivery.setRemoteOrder({ ...remote, status: 'accepted' })
+      if (sharedMode) {
+        setSharedOrder({ ...remote, status: 'accepted' } as ApiCustomerSharedOrder)
+      } else {
+        delivery.setRemoteOrder({ ...remote, status: 'accepted' } as ApiServiceOrder)
+      }
       await Taro.showModal({ title: '验收成功', content: '感谢您的确认，本次服务已完成验收。', showCancel: false })
     } catch (error) {
       Taro.showToast({ title: error instanceof Error ? error.message : '验收提交失败，请重试', icon: 'none', duration: 3000 })
@@ -121,7 +180,10 @@ export default function CustomerAcceptance() {
     }
   }
   const handlePrimaryAction = () => {
-    if (finished) return Taro.reLaunch({ url: '/pages/workbench/index' })
+    if (finished) {
+      if (sharedMode) return
+      return Taro.reLaunch({ url: '/pages/workbench/index' })
+    }
     return confirm()
   }
 
@@ -132,6 +194,15 @@ export default function CustomerAcceptance() {
       <Text className='order-number'>服务单号：{orderInfo.orderNo}</Text>
       {finished && finishedAt && <Text className='finish-time'>确认时间：{finishedAt}</Text>}
     </View>
+
+    {!sharedMode && <View className='acceptance-share'>
+      <View className='share-copy'>
+        <Text className='share-title'>发送给客户签字验收</Text>
+        <Text className='share-description'>点击后选择微信聊天，客户打开即可查看并签名。</Text>
+        {shareError && <Text className='share-error' onClick={() => orderId && void prepareShare(orderId)}>{shareError}，点击重试</Text>}
+      </View>
+      <Button className='share-btn' openType='share' loading={shareLoading} disabled={!shareToken || shareLoading}>转发到微信</Button>
+    </View>}
 
     <Section title='客户和服务信息'>
       {loading && <Text className='load-note'>正在读取服务单...</Text>}{loadError && <Text className='load-error'>{loadError}</Text>}
@@ -176,7 +247,7 @@ export default function CustomerAcceptance() {
     </Section>
 
     {finished && <View className='success-message'>✓ 感谢您的确认，本次服务已完成验收。</View>}
-    <View className='acceptance-fixed'><Button className='primary-btn' loading={submitting} disabled={!finished && (submitting || loading || !remote)} onClick={handlePrimaryAction}>{finished ? '返回工作台' : submitting ? '正在提交验收' : '确认验收'}</Button></View>
+    <View className='acceptance-fixed'><Button className='primary-btn' loading={submitting} disabled={(sharedMode && finished) || (!finished && (submitting || loading || !remote))} onClick={handlePrimaryAction}>{finished ? (sharedMode ? '验收已完成' : '返回工作台') : submitting ? '正在提交验收' : '确认验收'}</Button></View>
   </View>
 }
 

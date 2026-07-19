@@ -1,4 +1,4 @@
-import { apiRequest, uploadFile } from './api'
+import { apiRequest, publicApiRequest, publicUploadFile, uploadFile } from './api'
 
 export type OrderStatus = 'draft' | 'in_progress' | 'waiting_acceptance' | 'accepted' | 'cancelled'
 export type ApiPhoto = { id: string; phase: 'before' | 'after'; file_url: string; original_filename: string; sort_order: number; created_at: string }
@@ -55,6 +55,15 @@ export type ApiServiceOrder = {
   report_generation_status: 'not_started' | 'processing' | 'succeeded' | 'failed'
   report_generation_error: string | null; report_model: string | null; report_generated_at: string | null
 }
+export type ApiCustomerSharedOrder = {
+  id: string; order_no: string; company_name: string; customer_name: string
+  service_address: string; service_type: string; technician_name: string
+  status: 'waiting_acceptance' | 'accepted'
+  report: ApiReport | null; ai_report: ApiAiServiceReportDraft | null
+  total_amount_cents: number; paid_amount_cents: number
+  before_photos: ApiPhoto[]; after_photos: ApiPhoto[]
+}
+export type ApiCustomerShare = { share_token: string; expires_in: number }
 export type CreateOrderPayload = {
   order_no: string; company_name: string; customer_name: string; customer_phone: string
   service_address: string; service_type: string; status: OrderStatus
@@ -75,3 +84,14 @@ export const saveAiOrderReport = (id: string, report: ApiAiServiceReportDraft) =
 export const submitOrderAcceptance = (id: string) => apiRequest<ApiServiceOrder>(`/api/v1/service-orders/${id}/submit-acceptance`, { method: 'POST' })
 export const acceptServiceOrder = (id: string, signaturePath: string) =>
   uploadFile<ApiAcceptance>(`/api/v1/service-orders/${id}/acceptance`, signaturePath, { accepted: 'true' }, 'signature')
+export const createCustomerShare = (id: string) =>
+  apiRequest<ApiCustomerShare>(`/api/v1/service-orders/${id}/customer-share`, { method: 'POST' })
+export const getCustomerSharedOrder = (shareToken: string) =>
+  publicApiRequest<ApiCustomerSharedOrder>(`/api/v1/service-orders/customer-share/${encodeURIComponent(shareToken)}`)
+export const acceptCustomerSharedOrder = (shareToken: string, signaturePath: string) =>
+  publicUploadFile<ApiAcceptance>(
+    `/api/v1/service-orders/customer-share/${encodeURIComponent(shareToken)}/acceptance`,
+    signaturePath,
+    { accepted: 'true' },
+    'signature'
+  )

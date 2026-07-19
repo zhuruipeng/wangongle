@@ -2,21 +2,32 @@ import Taro from '@tarojs/taro'
 import { act, create } from 'react-test-renderer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useDelivery } from '../../context/DeliveryContext'
-import { acceptServiceOrder, getServiceOrder } from '../../services/serviceOrders'
+import {
+  acceptCustomerSharedOrder,
+  acceptServiceOrder,
+  createCustomerShare,
+  getCustomerSharedOrder,
+  getServiceOrder
+} from '../../services/serviceOrders'
 import CustomerAcceptance from './index'
 
-const taroHooks = vi.hoisted(() => ({ load: undefined as undefined | (() => void) }))
+const taroHooks = vi.hoisted(() => ({
+  load: undefined as undefined | (() => void),
+  share: undefined as undefined | (() => { title: string; path: string }),
+  params: { serviceOrderId: 'order-1' } as Record<string, string>
+}))
 
 vi.mock('@tarojs/taro', () => ({
   default: {
     canvasToTempFilePath: vi.fn(),
-    getCurrentInstance: vi.fn(() => ({ router: { params: { serviceOrderId: 'order-1' } } })),
+    getCurrentInstance: vi.fn(() => ({ router: { params: taroHooks.params } })),
     reLaunch: vi.fn(),
     showModal: vi.fn(),
     showToast: vi.fn()
   },
-  getCurrentInstance: vi.fn(() => ({ router: { params: { serviceOrderId: 'order-1' } } })),
-  useLoad: vi.fn((callback: () => void) => { taroHooks.load = callback })
+  getCurrentInstance: vi.fn(() => ({ router: { params: taroHooks.params } })),
+  useLoad: vi.fn((callback: () => void) => { taroHooks.load = callback }),
+  useShareAppMessage: vi.fn((callback: () => { title: string; path: string }) => { taroHooks.share = callback })
 }))
 vi.mock('@tarojs/components', () => ({
   Button: 'button',
@@ -31,7 +42,13 @@ vi.mock('../../components/SignaturePad', () => ({
     <button data-signature onClick={() => onSignedChange(true)}>签名</button>
 }))
 vi.mock('../../context/DeliveryContext', () => ({ useDelivery: vi.fn() }))
-vi.mock('../../services/serviceOrders', () => ({ acceptServiceOrder: vi.fn(), getServiceOrder: vi.fn() }))
+vi.mock('../../services/serviceOrders', () => ({
+  acceptCustomerSharedOrder: vi.fn(),
+  acceptServiceOrder: vi.fn(),
+  createCustomerShare: vi.fn(),
+  getCustomerSharedOrder: vi.fn(),
+  getServiceOrder: vi.fn()
+}))
 vi.mock('../../services/api', () => ({ absoluteFileUrl: (path: string) => path }))
 vi.mock('./index.scss', () => ({}))
 
@@ -75,6 +92,8 @@ describe('CustomerAcceptance', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     taroHooks.load = undefined
+    taroHooks.share = undefined
+    taroHooks.params = { serviceOrderId: 'order-1' }
     currentOrder = null
     vi.mocked(useDelivery).mockImplementation(() => ({
       serviceOrderId: 'order-1',
@@ -86,10 +105,16 @@ describe('CustomerAcceptance', () => {
       selectServiceOrder
     } as never))
     vi.mocked(getServiceOrder).mockResolvedValue(order as never)
+    vi.mocked(getCustomerSharedOrder).mockResolvedValue(order as never)
+    vi.mocked(createCustomerShare).mockResolvedValue({ share_token: 'share-token', expires_in: 2592000 })
     vi.mocked(Taro.canvasToTempFilePath).mockResolvedValue({ tempFilePath: '/tmp/signature.png', errMsg: 'ok' })
     vi.mocked(acceptServiceOrder).mockResolvedValue({
       status: 'accepted',
       acceptance: { id: 'acceptance-1', accepted_at: '2026-07-19T14:00:00Z', signature_url: '/signature' }
+    })
+    vi.mocked(acceptCustomerSharedOrder).mockResolvedValue({
+      status: 'accepted',
+      acceptance: { id: 'acceptance-2', accepted_at: '2026-07-19T14:00:00Z', signature_url: '/signature' }
     })
   })
 
@@ -112,6 +137,48 @@ describe('CustomerAcceptance', () => {
     expect(acceptServiceOrder).toHaveBeenCalledWith('order-1', '/tmp/signature.png')
     expect(setRemoteOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' }))
     expect(Taro.showModal).toHaveBeenCalledWith(expect.objectContaining({ title: '验收成功' }))
+  })
+
+  it('builds a WeChat chat card with a customer share token', async () => {
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<CustomerAcceptance />) })
+    await act(async () => {
+      currentOrder = order
+      taroHooks.load?.()
+      await Promise.resolve()
+      await Promise.resolve()
+      renderer.update(<CustomerAcceptance />)
+    })
+
+    expect(createCustomerShare).toHaveBeenCalledWith('order-1')
+    expect(taroHooks.share?.()).toEqual(expect.objectContaining({
+      title: '安心空调服务服务单，请您确认验收',
+      path: '/pages/customer-acceptance/index?shareToken=share-token'
+    }))
+    const shareButton = renderer.root.findAllByType('button').find(button => button.props.openType === 'share')
+    expect(shareButton?.props.disabled).toBe(false)
+  })
+
+  it('loads and accepts a shared order without the authenticated order API', async () => {
+    taroHooks.params = { shareToken: 'customer-token' }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<CustomerAcceptance />) })
+    await act(async () => {
+      taroHooks.load?.()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await act(async () => renderer.root.findByType('checkbox-group' as never).props.onChange({ detail: { value: ['accepted'] } }))
+    const buttons = renderer.root.findAllByType('button')
+    await act(async () => buttons.find(button => button.props['data-signature'])?.props.onClick())
+    await act(async () => buttons[buttons.length - 1].props.onClick())
+
+    expect(getCustomerSharedOrder).toHaveBeenCalledWith('customer-token')
+    expect(getServiceOrder).not.toHaveBeenCalled()
+    expect(createCustomerShare).not.toHaveBeenCalled()
+    expect(acceptCustomerSharedOrder).toHaveBeenCalledWith('customer-token', '/tmp/signature.png')
+    expect(acceptServiceOrder).not.toHaveBeenCalled()
   })
 
   it('returns to the workbench from an accepted order', async () => {
