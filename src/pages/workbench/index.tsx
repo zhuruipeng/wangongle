@@ -27,6 +27,31 @@ const emptyDraft: OrderDraft = {
   serviceType: ''
 }
 
+function orderStatusLabel(order: ApiServiceOrder): string {
+  if (order.status === 'waiting_acceptance') return '待验收'
+  if (order.status === 'accepted') return '已完成'
+  if (order.status === 'cancelled') return '已取消'
+  if (order.status === 'draft') return '草稿'
+  return '进行中'
+}
+
+function orderActionLabel(order: ApiServiceOrder): string {
+  if (order.status === 'waiting_acceptance') return '客户验收'
+  if (order.status === 'accepted') return '查看验收'
+  if (order.status === 'cancelled') return '已取消'
+  return '继续交付'
+}
+
+function nextOrderPage(order: ApiServiceOrder): string {
+  if (order.status === 'waiting_acceptance' || order.status === 'accepted') {
+    return `/pages/customer-acceptance/index?serviceOrderId=${order.id}`
+  }
+  if (!order.before_photos.length) return '/pages/before-photos/index'
+  if (!order.after_photos.length) return '/pages/after-photos/index'
+  if (!order.transcript) return '/pages/voice/index'
+  return '/pages/report/index'
+}
+
 export default function Workbench() {
   const [date, setDate] = useState('')
   const [creating, setCreating] = useState(false)
@@ -34,7 +59,7 @@ export default function Workbench() {
   const [recentOrders, setRecentOrders] = useState<ApiServiceOrder[]>([])
   const [listError, setListError] = useState('')
   const { user } = useAuth()
-  const { setServiceOrderId, setRemoteOrder } = useDelivery()
+  const { selectServiceOrder } = useDelivery()
   useDidShow(async () => {
     setDate(new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }))
     try {
@@ -45,6 +70,11 @@ export default function Workbench() {
     }
   })
   const updateDraft = (key: keyof OrderDraft, value: string) => setDraft(current => ({ ...current, [key]: value }))
+  const openOrder = async (order: ApiServiceOrder) => {
+    if (order.status === 'cancelled') return
+    selectServiceOrder(order)
+    await Taro.navigateTo({ url: nextOrderPage(order) })
+  }
   const startDelivery = async () => {
     if (creating) return
     const values = Object.fromEntries(Object.entries(draft).map(([key, value]) => [key, value.trim()])) as OrderDraft
@@ -62,7 +92,7 @@ export default function Workbench() {
         service_type: values.serviceType,
         status: 'in_progress'
       })
-      setServiceOrderId(order.id); setRemoteOrder(order)
+      selectServiceOrder(order)
       setRecentOrders(current => [order, ...current.filter(item => item.id !== order.id)])
       Taro.showToast({ title: '服务单已创建', icon: 'success' })
       await Taro.navigateTo({ url: '/pages/before-photos/index' })
@@ -90,11 +120,13 @@ export default function Workbench() {
     {!!listError && <View className='order-list-message card'><Text>{listError}</Text></View>}
     {!listError && recentOrders.length === 0 && <View className='order-list-message card'><Text>还没有服务单，点击上方按钮开始第一单。</Text></View>}
     {recentOrders.map(order => <View className='workbench-order card' key={order.id}>
-      <View className='workbench-order-head'><Text>{order.order_no}</Text><Text className='workbench-order-status'>{order.status === 'waiting_acceptance' ? '待验收' : order.status === 'accepted' ? '已完成' : '进行中'}</Text></View>
+      <View className='workbench-order-head'><Text>{order.order_no}</Text><Text className={`workbench-order-status status-${order.status}`}>{orderStatusLabel(order)}</Text></View>
       <Text className='workbench-order-customer'>{order.customer_name}</Text>
+      <Text className='workbench-order-line'>{order.customer_phone}</Text>
       <Text className='workbench-order-line'>{order.service_address}</Text>
       <Text className='workbench-order-line'>{order.service_type}</Text>
       {order.ai_report?.work_summary && <Text className='workbench-order-line'>报告：{order.ai_report.work_summary}</Text>}
+      <Button className='workbench-order-action' disabled={order.status === 'cancelled'} onClick={() => openOrder(order)}>{orderActionLabel(order)}</Button>
     </View>)}
   </View>
 }

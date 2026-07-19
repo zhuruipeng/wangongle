@@ -12,9 +12,11 @@ vi.mock('./AuthContext', () => ({ useAuth: vi.fn() }))
 let authValue: AuthContextValue
 let currentOrderId = ''
 let observedOrderIds: string[] = []
+let currentDelivery: ReturnType<typeof useDelivery>
 
 function Probe() {
-  currentOrderId = useDelivery().serviceOrderId
+  currentDelivery = useDelivery()
+  currentOrderId = currentDelivery.serviceOrderId
   observedOrderIds.push(currentOrderId)
   return null
 }
@@ -88,5 +90,39 @@ describe('DeliveryProvider authenticated persistence', () => {
 
     expect(currentOrderId).toBe('')
     expect(Taro.getStorageSync).toHaveBeenLastCalledWith('ganwanleServiceOrderId:wechat-user')
+  })
+
+  it('replaces all delivery state when selecting a remote order', async () => {
+    authValue = auth('authenticated', 'user-a')
+    await renderProvider()
+    const order = {
+      id: 'order-a',
+      ai_report: null,
+      generated_report: null,
+      report: null,
+      before_photos: [{ file_url: '/files/before.jpg' }],
+      after_photos: [{ file_url: 'https://cdn.example.com/after.jpg' }],
+      audio_url: '/files/audio.mp3',
+      transcript: '已完成安装'
+    }
+
+    await act(async () => {
+      currentDelivery.setBeforePhotos(['stale-before.jpg'])
+      currentDelivery.setAfterPhotos(['stale-after.jpg'])
+      currentDelivery.setVoicePath('stale-audio.mp3')
+      currentDelivery.setDescription('上一单的文字')
+    })
+    await act(async () => currentDelivery.selectServiceOrder(order as never))
+
+    expect(currentDelivery.serviceOrderId).toBe('order-a')
+    expect(currentDelivery.remoteOrder).toBe(order)
+    expect(currentDelivery.beforePhotos).toEqual(['http://localhost:8000/files/before.jpg'])
+    expect(currentDelivery.afterPhotos).toEqual(['https://cdn.example.com/after.jpg'])
+    expect(currentDelivery.voicePath).toBe('http://localhost:8000/files/audio.mp3')
+    expect(currentDelivery.description).toBe('已完成安装')
+    expect(currentDelivery.report).toEqual({
+      completed: [], materials: [], serviceFee: '0', materialFee: '0', paid: '0', risks: [], afterSales: ''
+    })
+    expect(Taro.setStorageSync).toHaveBeenCalledWith('ganwanleServiceOrderId:user-a', 'order-a')
   })
 })

@@ -84,7 +84,7 @@ export default function CustomerAcceptance() {
     setOrderId(id)
     delivery.setServiceOrderId(id); setLoading(true); setLoadError('')
     getServiceOrder(id)
-      .then(order => delivery.setRemoteOrder(order))
+      .then(order => delivery.selectServiceOrder(order))
       .catch(error => setLoadError(error instanceof Error ? error.message : '服务单加载失败'))
       .finally(() => setLoading(false))
   })
@@ -120,13 +120,17 @@ export default function CustomerAcceptance() {
       setSubmitting(false)
     }
   }
+  const handlePrimaryAction = () => {
+    if (finished) return Taro.reLaunch({ url: '/pages/workbench/index' })
+    return confirm()
+  }
 
   return <View className='acceptance-page'>
     <View className={`acceptance-header ${finished ? 'finished' : ''}`}>
       <Text className='acceptance-brand'>干完了</Text><Text className='company'>{orderInfo.company}</Text>
       <Text className='acceptance-status'>{finished ? '✓ 服务已验收' : '状态：等待客户验收'}</Text>
       <Text className='order-number'>服务单号：{orderInfo.orderNo}</Text>
-      {finished && <Text className='finish-time'>确认时间：{finishedAt}</Text>}
+      {finished && finishedAt && <Text className='finish-time'>确认时间：{finishedAt}</Text>}
     </View>
 
     <Section title='客户和服务信息'>
@@ -172,7 +176,7 @@ export default function CustomerAcceptance() {
     </Section>
 
     {finished && <View className='success-message'>✓ 感谢您的确认，本次服务已完成验收。</View>}
-    <View className='acceptance-fixed'><Button className='primary-btn' loading={submitting} disabled={finished || submitting || loading || !remote} onClick={confirm}>{finished ? '验收已完成' : submitting ? '正在提交验收' : '确认验收'}</Button></View>
+    <View className='acceptance-fixed'><Button className='primary-btn' loading={submitting} disabled={!finished && (submitting || loading || !remote)} onClick={handlePrimaryAction}>{finished ? '返回工作台' : submitting ? '正在提交验收' : '确认验收'}</Button></View>
   </View>
 }
 

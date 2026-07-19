@@ -1,7 +1,7 @@
 import Taro from '@tarojs/taro'
 import { createContext, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react'
 import { useAuth } from './AuthContext'
-import { initialReport } from '../mock/service'
+import { absoluteFileUrl } from '../services/api'
 import type { ApiAiServiceReportDraft, ApiGeneratedReport, ApiServiceOrder } from '../services/serviceOrders'
 
 export type Material = { name: string; quantity: string; unitPrice?: string; price: string }
@@ -14,12 +14,41 @@ export type Report = {
   risks: string[]
   afterSales: string
 }
+
+const createEmptyReport = (): Report => ({
+  completed: [],
+  materials: [],
+  serviceFee: '0',
+  materialFee: '0',
+  paid: '0',
+  risks: [],
+  afterSales: ''
+})
+
+function reportFromOrder(order: ApiServiceOrder): Report {
+  if (!order.report) return createEmptyReport()
+  return {
+    completed: order.report.completed_items,
+    materials: order.report.materials.map(item => ({
+      name: item.name,
+      quantity: item.quantity,
+      price: item.amount_cents === null ? '' : String(item.amount_cents / 100)
+    })),
+    serviceFee: String((order.report.fee_items.find(item => item.name === '安装服务费')?.amount_cents || 0) / 100),
+    materialFee: String((order.report.fee_items.find(item => item.name === '材料费')?.amount_cents || 0) / 100),
+    paid: String(order.report.paid_amount_cents / 100),
+    risks: order.report.risks,
+    afterSales: order.report.after_sales_reminder
+  }
+}
+
 type DeliveryState = {
   serviceOrderId: string; remoteOrder: ApiServiceOrder | null
   aiReport: ApiAiServiceReportDraft | null
   generatedReport: ApiGeneratedReport | null; reportConfirmed: boolean
   beforePhotos: string[]; afterPhotos: string[]; voicePath: string; description: string; report: Report
   setServiceOrderId: (v: string) => void; setRemoteOrder: (v: ApiServiceOrder | null) => void
+  selectServiceOrder: (order: ApiServiceOrder) => void
   setAiReport: (v: ApiAiServiceReportDraft | null) => void
   setGeneratedReport: (v: ApiGeneratedReport | null) => void; setReportConfirmed: (v: boolean) => void
   setBeforePhotos: (v: string[]) => void; setAfterPhotos: (v: string[]) => void
@@ -41,7 +70,7 @@ export function DeliveryProvider({ children }: PropsWithChildren) {
   const [afterPhotos, setAfterPhotos] = useState<string[]>([])
   const [voicePath, setVoicePath] = useState('')
   const [description, setDescription] = useState('')
-  const [report, setReport] = useState<Report>(initialReport)
+  const [report, setReport] = useState<Report>(createEmptyReport)
   const clearDeliveryState = () => {
     setServiceOrderIdState('')
     setRemoteOrder(null)
@@ -52,7 +81,7 @@ export function DeliveryProvider({ children }: PropsWithChildren) {
     setAfterPhotos([])
     setVoicePath('')
     setDescription('')
-    setReport(initialReport)
+    setReport(createEmptyReport())
   }
 
   useEffect(() => {
@@ -77,9 +106,21 @@ export function DeliveryProvider({ children }: PropsWithChildren) {
     if (!storageKey) return
     value ? Taro.setStorageSync(storageKey, value) : Taro.removeStorageSync(storageKey)
   }
+  const selectServiceOrder = (order: ApiServiceOrder) => {
+    setServiceOrderId(order.id)
+    setRemoteOrder(order)
+    setAiReport(order.ai_report)
+    setGeneratedReportState(order.generated_report)
+    setReportConfirmed(Boolean(order.report || order.ai_report))
+    setBeforePhotos(order.before_photos.map(photo => absoluteFileUrl(photo.file_url)))
+    setAfterPhotos(order.after_photos.map(photo => absoluteFileUrl(photo.file_url)))
+    setVoicePath(order.audio_url ? absoluteFileUrl(order.audio_url) : '')
+    setDescription(order.transcript || '')
+    setReport(reportFromOrder(order))
+  }
   const setGeneratedReport = (value: ApiGeneratedReport | null) => { setGeneratedReportState(value); setReportConfirmed(false) }
   const value = useMemo(() => ({ serviceOrderId, remoteOrder, aiReport, generatedReport, reportConfirmed, beforePhotos, afterPhotos, voicePath, description, report,
-    setServiceOrderId, setRemoteOrder, setAiReport, setGeneratedReport, setReportConfirmed,
+    setServiceOrderId, setRemoteOrder, selectServiceOrder, setAiReport, setGeneratedReport, setReportConfirmed,
     setBeforePhotos, setAfterPhotos, setVoicePath, setDescription, setReport
   }), [serviceOrderId, remoteOrder, aiReport, generatedReport, reportConfirmed, beforePhotos, afterPhotos, voicePath, description, report])
   return <DeliveryContext.Provider value={value}>{children}</DeliveryContext.Provider>

@@ -11,6 +11,7 @@ vi.mock('@tarojs/taro', () => ({
   default: {
     canvasToTempFilePath: vi.fn(),
     getCurrentInstance: vi.fn(() => ({ router: { params: { serviceOrderId: 'order-1' } } })),
+    reLaunch: vi.fn(),
     showModal: vi.fn(),
     showToast: vi.fn()
   },
@@ -68,6 +69,7 @@ const order = {
 describe('CustomerAcceptance', () => {
   const setServiceOrderId = vi.fn()
   const setRemoteOrder = vi.fn()
+  const selectServiceOrder = vi.fn()
   let currentOrder: typeof order | null
 
   beforeEach(() => {
@@ -80,7 +82,8 @@ describe('CustomerAcceptance', () => {
       beforePhotos: [],
       afterPhotos: [],
       setServiceOrderId,
-      setRemoteOrder
+      setRemoteOrder,
+      selectServiceOrder
     } as never))
     vi.mocked(getServiceOrder).mockResolvedValue(order as never)
     vi.mocked(Taro.canvasToTempFilePath).mockResolvedValue({ tempFilePath: '/tmp/signature.png', errMsg: 'ok' })
@@ -109,6 +112,17 @@ describe('CustomerAcceptance', () => {
     expect(acceptServiceOrder).toHaveBeenCalledWith('order-1', '/tmp/signature.png')
     expect(setRemoteOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' }))
     expect(Taro.showModal).toHaveBeenCalledWith(expect.objectContaining({ title: '验收成功' }))
+  })
+
+  it('returns to the workbench from an accepted order', async () => {
+    currentOrder = { ...order, status: 'accepted' } as never
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<CustomerAcceptance />) })
+    const buttons = renderer.root.findAllByType('button')
+    const primaryButton = buttons[buttons.length - 1]
+    await act(async () => primaryButton?.props.onClick())
+
+    expect(Taro.reLaunch).toHaveBeenCalledWith({ url: '/pages/workbench/index' })
   })
 
   it('does not fall back to simulated customer data when loading fails', async () => {
