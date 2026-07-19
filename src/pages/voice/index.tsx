@@ -13,17 +13,30 @@ type RecorderPhase = 'idle' | 'recording' | 'stopping' | 'uploading' | 'transcri
 type StopResult = { tempFilePath: string; duration?: number }
 type RecorderError = { errMsg?: string }
 type RecorderHandlers = { onStart: () => void; onStop: (result: StopResult) => void; onError: (error: RecorderError) => void }
+type RecorderManager = ReturnType<typeof Taro.getRecorderManager>
 
 const MAX_SECONDS = 45
 const MIN_DURATION_MS = 800
 
 // RecorderManager is globally unique. Register its listeners once and route events
 // to only the currently mounted voice page, because this Taro version has no offStop/offError.
-const recorderManager = Taro.getRecorderManager()
+let recorderManager: RecorderManager | null = null
 let activeHandlers: RecorderHandlers | null = null
-recorderManager.onStart(() => activeHandlers?.onStart())
-recorderManager.onStop(result => activeHandlers?.onStop(result))
-recorderManager.onError(error => activeHandlers?.onError(error))
+
+function getRecorderManagerSafely(): RecorderManager | null {
+  if (recorderManager) return recorderManager
+  try {
+    const manager = Taro.getRecorderManager()
+    if (!manager) return null
+    manager.onStart(() => activeHandlers?.onStart())
+    manager.onStop(result => activeHandlers?.onStop(result))
+    manager.onError(error => activeHandlers?.onError(error))
+    recorderManager = manager
+    return manager
+  } catch {
+    return null
+  }
+}
 
 export default function Voice() {
   const { serviceOrderId, voicePath, setVoicePath, description, setDescription, setAiReport, setRemoteOrder } = useDelivery()
@@ -70,6 +83,7 @@ export default function Voice() {
 
   useEffect(() => {
     mountedRef.current = true
+    const manager = getRecorderManagerSafely()
     const handlers: RecorderHandlers = {
       onStart: () => {
         if (!mountedRef.current) return
@@ -132,12 +146,20 @@ export default function Voice() {
       }
     }
     activeHandlers = handlers
+    if (!manager) {
+      setSpeechError('当前环境无法使用录音，可直接输入文字')
+      setPhase('error')
+    }
     return () => {
       mountedRef.current = false
       stopTimer()
-      if (recordingRef.current && !stopRequestedRef.current) {
+      if (manager && recordingRef.current && !stopRequestedRef.current) {
         stopRequestedRef.current = true
-        recorderManager.stop()
+        try {
+          manager.stop()
+        } catch {
+          // The page is already leaving, so a synchronous stop failure is harmless.
+        }
       }
       recordingRef.current = false
       processingRef.current = false
@@ -146,6 +168,13 @@ export default function Voice() {
   }, [serviceOrderId, setDescription, setVoicePath])
 
   const startRecording = () => {
+    const manager = getRecorderManagerSafely()
+    if (!manager) {
+      setSpeechError('当前环境无法使用录音，可直接输入文字')
+      setPhase('error')
+      Taro.showToast({ title: '当前环境无法录音，请直接输入文字', icon: 'none' })
+      return
+    }
     const current = phaseRef.current
     if (current === 'stopping' || current === 'uploading' || current === 'transcribing' || processingRef.current) {
       Taro.showToast({ title: '正在处理上一段录音，请稍候', icon: 'none' })
@@ -161,16 +190,35 @@ export default function Voice() {
     setNewAudioUploaded(false)
     setRemaining(MAX_SECONDS)
     setPhase('recording')
-    recorderManager.start({ duration: MAX_SECONDS * 1000, sampleRate: 16000, numberOfChannels: 1, encodeBitRate: 48000, format: 'mp3' })
-    timerRef.current = setInterval(() => setRemaining(value => Math.max(0, value - 1)), 1000)
+    try {
+      manager.start({ duration: MAX_SECONDS * 1000, sampleRate: 16000, numberOfChannels: 1, encodeBitRate: 48000, format: 'mp3' })
+      timerRef.current = setInterval(() => setRemaining(value => Math.max(0, value - 1)), 1000)
+    } catch {
+      recordingRef.current = false
+      setSpeechError('录音未能开始，可直接输入文字')
+      setPhase('error')
+    }
   }
 
   const stopRecording = () => {
     if (!recordingRef.current || stopRequestedRef.current) return
+    const manager = getRecorderManagerSafely()
+    if (!manager) {
+      recordingRef.current = false
+      setSpeechError('录音未能结束，请重新录制或直接输入文字')
+      setPhase('error')
+      return
+    }
     stopRequestedRef.current = true
     recordingRef.current = false
     setPhase('stopping')
-    recorderManager.stop()
+    try {
+      manager.stop()
+    } catch {
+      stopRequestedRef.current = false
+      setSpeechError('录音未能结束，请重新录制或直接输入文字')
+      setPhase('error')
+    }
   }
 
   const retryTranscription = () => {
