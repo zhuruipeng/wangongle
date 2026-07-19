@@ -27,8 +27,10 @@ type DeliveryState = {
 const DeliveryContext = createContext<DeliveryState | null>(null)
 
 export function DeliveryProvider({ children }: PropsWithChildren) {
-  const { status: authStatus } = useAuth()
-  const [serviceOrderId, setServiceOrderIdState] = useState(() => Taro.getStorageSync<string>('ganwanleServiceOrderId') || '')
+  const { status: authStatus, user } = useAuth()
+  const storageKey = authStatus === 'authenticated' && user?.profile_complete ? `ganwanleServiceOrderId:${user.id}` : ''
+  const [activeStorageKey, setActiveStorageKey] = useState('')
+  const [serviceOrderId, setServiceOrderIdState] = useState('')
   const [remoteOrder, setRemoteOrder] = useState<ApiServiceOrder | null>(null)
   const [generatedReport, setGeneratedReportState] = useState<ApiGeneratedReport | null>(null)
   const [reportConfirmed, setReportConfirmed] = useState(false)
@@ -37,8 +39,7 @@ export function DeliveryProvider({ children }: PropsWithChildren) {
   const [voicePath, setVoicePath] = useState('')
   const [description, setDescription] = useState('')
   const [report, setReport] = useState<Report>(initialReport)
-  useEffect(() => {
-    if (authStatus !== 'anonymous') return
+  const clearDeliveryState = () => {
     setServiceOrderIdState('')
     setRemoteOrder(null)
     setGeneratedReportState(null)
@@ -48,9 +49,30 @@ export function DeliveryProvider({ children }: PropsWithChildren) {
     setVoicePath('')
     setDescription('')
     setReport(initialReport)
-    Taro.removeStorageSync('ganwanleServiceOrderId')
-  }, [authStatus])
-  const setServiceOrderId = (value: string) => { setServiceOrderIdState(value); value ? Taro.setStorageSync('ganwanleServiceOrderId', value) : Taro.removeStorageSync('ganwanleServiceOrderId') }
+  }
+
+  useEffect(() => {
+    if (!storageKey) {
+      setActiveStorageKey('')
+      clearDeliveryState()
+      if (authStatus === 'anonymous') Taro.removeStorageSync('ganwanleServiceOrderId')
+      return
+    }
+    if (storageKey === activeStorageKey) return
+    clearDeliveryState()
+    setActiveStorageKey(storageKey)
+  }, [activeStorageKey, authStatus, storageKey])
+
+  useEffect(() => {
+    if (!activeStorageKey || activeStorageKey !== storageKey) return
+    setServiceOrderIdState(Taro.getStorageSync<string>(activeStorageKey) || '')
+  }, [activeStorageKey, storageKey])
+
+  const setServiceOrderId = (value: string) => {
+    setServiceOrderIdState(value)
+    if (!storageKey) return
+    value ? Taro.setStorageSync(storageKey, value) : Taro.removeStorageSync(storageKey)
+  }
   const setGeneratedReport = (value: ApiGeneratedReport | null) => { setGeneratedReportState(value); setReportConfirmed(false) }
   const value = useMemo(() => ({ serviceOrderId, remoteOrder, generatedReport, reportConfirmed, beforePhotos, afterPhotos, voicePath, description, report,
     setServiceOrderId, setRemoteOrder, setGeneratedReport, setReportConfirmed,

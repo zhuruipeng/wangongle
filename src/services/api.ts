@@ -88,15 +88,15 @@ async function authenticatedUpload<T>(path: string, filePath: string, formData: 
   } catch (error) {
     throw connectionError(error, '文件上传失败，请检查后端连接')
   }
+  if (response.statusCode === 401 && !NON_REFRESHABLE_AUTH_PATHS.has(path.split('?')[0])) {
+    await recoverUnauthorized(retried)
+    if (!retried) return authenticatedUpload(path, filePath, formData, true)
+  }
   let body: { detail?: string } & Partial<T> = {}
   try {
     body = response.data ? JSON.parse(response.data) : {}
   } catch {
     throw new Error('上传响应格式错误')
-  }
-  if (response.statusCode === 401 && !NON_REFRESHABLE_AUTH_PATHS.has(path.split('?')[0])) {
-    await recoverUnauthorized(retried)
-    if (!retried) return authenticatedUpload(path, filePath, formData, true)
   }
   if (response.statusCode < 200 || response.statusCode >= 300) {
     throw responseError(body, `上传失败（${response.statusCode}）`)

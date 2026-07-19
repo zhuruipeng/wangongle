@@ -97,4 +97,30 @@ describe('authenticated API transport', () => {
       formData: { phase: 'before' }
     }))
   })
+
+  it.each(['', '<html>unauthorized</html>'])('refreshes an upload when the first 401 body is non-JSON: %j', async unauthorizedBody => {
+    vi.mocked(Taro.uploadFile)
+      .mockResolvedValueOnce({ statusCode: 401, data: unauthorizedBody } as never)
+      .mockResolvedValueOnce({ statusCode: 200, data: JSON.stringify({ file_url: '/files/photo.jpg' }) } as never)
+
+    await expect(uploadFile('/api/v1/service-orders/order-1/photos', '/tmp/photo.jpg'))
+      .resolves.toEqual({ file_url: '/files/photo.jpg' })
+
+    expect(refreshSession).toHaveBeenCalledTimes(1)
+    expect(Taro.uploadFile).toHaveBeenCalledTimes(2)
+  })
+
+  it('expires after a retried upload returns a non-JSON 401', async () => {
+    vi.mocked(Taro.uploadFile)
+      .mockResolvedValueOnce({ statusCode: 401, data: '' } as never)
+      .mockResolvedValueOnce({ statusCode: 401, data: '<html>still unauthorized</html>' } as never)
+
+    await expect(uploadFile('/api/v1/service-orders/order-1/photos', '/tmp/photo.jpg'))
+      .rejects.toThrow('上传响应格式错误')
+
+    expect(refreshSession).toHaveBeenCalledTimes(1)
+    expect(Taro.uploadFile).toHaveBeenCalledTimes(2)
+    expect(clearSession).toHaveBeenCalledTimes(1)
+    expect(Taro.reLaunch).toHaveBeenCalledWith({ url: '/pages/login/index' })
+  })
 })
