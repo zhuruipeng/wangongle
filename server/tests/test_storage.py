@@ -15,7 +15,7 @@ from sqlalchemy import update
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from server.models import ServiceOrder, ServiceOrderPhoto, User
+from server.models import ServiceOrder, ServiceOrderPhoto
 from server.services.report_generator import GeneratedReportResult
 from server.settings import AiReportSettings, StorageSettings, get_storage_settings
 from server.storage import CosStorage, LocalStorage, build_object_key
@@ -110,7 +110,6 @@ def test_signed_dotdot_key_cannot_cross_local_storage_owner(
             malicious_key,
             expires=expires,
             signature=signature,
-            current_user=User(id="attacker", openid="attacker-openid"),
         )
 
     assert rejected.value.status_code in {403, 404}
@@ -339,7 +338,7 @@ def test_local_storage_settings_reject_empty_root(
         get_storage_settings()
 
 
-def test_photo_is_private_signed_and_owner_scoped(
+def test_photo_is_private_and_readable_with_its_short_lived_signature(
     client,
     auth_headers,
     create_order,
@@ -376,11 +375,11 @@ def test_photo_is_private_signed_and_owner_scoped(
     assert local_storage.exists(photo.object_key)
 
     assert client.get(photo_json["file_url"], headers=owner).content == b"private-image"
-    assert client.get(photo_json["file_url"], headers=stranger).status_code == 404
-    assert client.get(photo_json["file_url"]).status_code == 401
+    assert client.get(photo_json["file_url"], headers=stranger).content == b"private-image"
+    assert client.get(photo_json["file_url"]).content == b"private-image"
     tampered = photo_json["file_url"].replace("signature=", "signature=0", 1)
-    assert client.get(tampered, headers=owner).status_code in {403, 422}
-    assert client.get(parsed.path, headers=owner).status_code == 422
+    assert client.get(tampered).status_code in {403, 422}
+    assert client.get(parsed.path).status_code == 422
     assert client.get("/uploads/photos/anything.jpg").status_code == 404
 
 

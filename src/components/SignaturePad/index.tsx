@@ -1,6 +1,6 @@
 import Taro from '@tarojs/taro'
 import { Button, Canvas, Text, View } from '@tarojs/components'
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import './index.scss'
 
 type Point = { x: number; y: number }
@@ -13,6 +13,18 @@ type SignaturePadProps = {
 export default function SignaturePad({ disabled, signed, onSignedChange }: SignaturePadProps) {
   const context = useRef<Taro.CanvasContext | null>(null)
   const drawing = useRef(false)
+  const lastPoint = useRef<Point | null>(null)
+  const pendingPoints = useRef<Point[]>([])
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const signedReported = useRef(signed)
+
+  useEffect(() => {
+    signedReported.current = signed
+  }, [signed])
+
+  useEffect(() => () => {
+    if (flushTimer.current) clearTimeout(flushTimer.current)
+  }, [])
 
   const getContext = () => {
     if (!context.current) {
@@ -30,33 +42,63 @@ export default function SignaturePad({ disabled, signed, onSignedChange }: Signa
     return touch && typeof touch.x === 'number' && typeof touch.y === 'number' ? { x: touch.x, y: touch.y } : null
   }
 
+  const flush = () => {
+    if (flushTimer.current) clearTimeout(flushTimer.current)
+    flushTimer.current = null
+    const startPoint = lastPoint.current
+    const points = pendingPoints.current.splice(0)
+    if (!startPoint || !points.length) return
+    const ctx = getContext()
+    ctx.beginPath()
+    ctx.moveTo(startPoint.x, startPoint.y)
+    points.forEach(point => ctx.lineTo(point.x, point.y))
+    ctx.stroke()
+    ctx.draw(true)
+    lastPoint.current = points[points.length - 1]
+  }
+
+  const scheduleFlush = () => {
+    if (flushTimer.current) return
+    flushTimer.current = setTimeout(flush, 16)
+  }
+
   const start = (event: { changedTouches?: Array<{ x?: number; y?: number }> }) => {
     if (disabled) return
     const point = pointFromEvent(event)
     if (!point) return
+    flush()
     drawing.current = true
-    const ctx = getContext()
-    ctx.beginPath()
-    ctx.moveTo(point.x, point.y)
+    lastPoint.current = point
   }
 
   const move = (event: { changedTouches?: Array<{ x?: number; y?: number }> }) => {
     if (disabled || !drawing.current) return
     const point = pointFromEvent(event)
     if (!point) return
-    const ctx = getContext()
-    ctx.lineTo(point.x, point.y)
-    ctx.stroke()
-    ctx.draw(true)
-    if (!signed) onSignedChange(true)
+    pendingPoints.current.push(point)
+    scheduleFlush()
+    if (!signedReported.current) {
+      signedReported.current = true
+      onSignedChange(true)
+    }
   }
 
-  const end = () => { drawing.current = false }
+  const end = () => {
+    drawing.current = false
+    flush()
+    lastPoint.current = null
+  }
   const clear = () => {
     if (disabled) return
+    if (flushTimer.current) clearTimeout(flushTimer.current)
+    flushTimer.current = null
+    drawing.current = false
+    lastPoint.current = null
+    pendingPoints.current = []
     const ctx = getContext()
     ctx.clearRect(0, 0, 1000, 500)
     ctx.draw()
+    signedReported.current = false
     onSignedChange(false)
   }
 

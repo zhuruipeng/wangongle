@@ -361,7 +361,6 @@ def get_private_local_file(
     key: str,
     expires: int = Query(...),
     signature: str = Query(..., min_length=64, max_length=64),
-    current_user: User = Depends(get_current_user),
 ):
     storage = get_storage()
     if not isinstance(storage, LocalStorage):
@@ -370,8 +369,6 @@ def get_private_local_file(
         parsed_key = parse_object_key(key)
     except ValueError:
         raise HTTPException(status_code=403, detail="文件签名无效或已过期") from None
-    if parsed_key.owner_user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="文件不存在")
     try:
         path = storage.validate_presigned_get(parsed_key.key, expires, signature)
     except FileNotFoundError:
