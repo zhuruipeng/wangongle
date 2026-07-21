@@ -6,9 +6,10 @@ import SignaturePad from './index'
 const canvasContext = {
   beginPath: vi.fn(),
   clearRect: vi.fn(),
-  draw: vi.fn(),
+  draw: vi.fn((_reserve?: boolean, callback?: () => void) => callback?.()),
   lineTo: vi.fn(),
   moveTo: vi.fn(),
+  quadraticCurveTo: vi.fn(),
   setLineCap: vi.fn(),
   setLineJoin: vi.fn(),
   setLineWidth: vi.fn(),
@@ -48,10 +49,11 @@ describe('SignaturePad', () => {
     await act(async () => vi.advanceTimersByTime(16))
 
     expect(canvasContext.moveTo).toHaveBeenCalledWith(10, 20)
-    expect(canvasContext.lineTo).toHaveBeenCalledTimes(3)
+    expect(canvasContext.quadraticCurveTo).toHaveBeenCalledTimes(2)
+    expect(canvasContext.lineTo).toHaveBeenCalledWith(13, 23)
     expect(canvasContext.stroke).toHaveBeenCalledTimes(1)
     expect(canvasContext.draw).toHaveBeenCalledTimes(1)
-    expect(canvasContext.draw).toHaveBeenCalledWith(true)
+    expect(canvasContext.draw).toHaveBeenCalledWith(false, expect.any(Function))
   })
 
   it('flushes the final points when the finger leaves the canvas', async () => {
@@ -66,7 +68,7 @@ describe('SignaturePad', () => {
 
     expect(canvasContext.moveTo).toHaveBeenCalledWith(5, 6)
     expect(canvasContext.lineTo).toHaveBeenCalledWith(15, 16)
-    expect(canvasContext.draw).toHaveBeenCalledWith(true)
+    expect(canvasContext.draw).toHaveBeenCalledWith(false, expect.any(Function))
     expect(vi.getTimerCount()).toBe(0)
   })
 })

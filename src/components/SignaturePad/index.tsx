@@ -13,9 +13,11 @@ type SignaturePadProps = {
 export default function SignaturePad({ disabled, signed, onSignedChange }: SignaturePadProps) {
   const context = useRef<Taro.CanvasContext | null>(null)
   const drawing = useRef(false)
-  const lastPoint = useRef<Point | null>(null)
-  const pendingPoints = useRef<Point[]>([])
-  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const strokes = useRef<Point[][]>([])
+  const activeStroke = useRef<Point[] | null>(null)
+  const renderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const rendering = useRef(false)
+  const renderQueued = useRef(false)
   const signedReported = useRef(signed)
 
   useEffect(() => {
@@ -23,16 +25,12 @@ export default function SignaturePad({ disabled, signed, onSignedChange }: Signa
   }, [signed])
 
   useEffect(() => () => {
-    if (flushTimer.current) clearTimeout(flushTimer.current)
+    if (renderTimer.current) clearTimeout(renderTimer.current)
   }, [])
 
   const getContext = () => {
     if (!context.current) {
       context.current = Taro.createCanvasContext('customerSignature')
-      context.current.setStrokeStyle('#173b65')
-      context.current.setLineWidth(4)
-      context.current.setLineCap('round')
-      context.current.setLineJoin('round')
     }
     return context.current
   }
@@ -42,41 +40,66 @@ export default function SignaturePad({ disabled, signed, onSignedChange }: Signa
     return touch && typeof touch.x === 'number' && typeof touch.y === 'number' ? { x: touch.x, y: touch.y } : null
   }
 
-  const flush = () => {
-    if (flushTimer.current) clearTimeout(flushTimer.current)
-    flushTimer.current = null
-    const startPoint = lastPoint.current
-    const points = pendingPoints.current.splice(0)
-    if (!startPoint || !points.length) return
+  const render = () => {
+    if (renderTimer.current) clearTimeout(renderTimer.current)
+    renderTimer.current = null
+    if (rendering.current) {
+      renderQueued.current = true
+      return
+    }
+    rendering.current = true
+    renderQueued.current = false
     const ctx = getContext()
-    ctx.beginPath()
-    ctx.moveTo(startPoint.x, startPoint.y)
-    points.forEach(point => ctx.lineTo(point.x, point.y))
-    ctx.stroke()
-    ctx.draw(true)
-    lastPoint.current = points[points.length - 1]
+    ctx.clearRect(0, 0, 1000, 500)
+    ctx.setStrokeStyle('#173b65')
+    ctx.setLineWidth(5)
+    ctx.setLineCap('round')
+    ctx.setLineJoin('round')
+    strokes.current.forEach(stroke => {
+      if (stroke.length < 2) return
+      ctx.beginPath()
+      ctx.moveTo(stroke[0].x, stroke[0].y)
+      for (let index = 1; index < stroke.length - 1; index += 1) {
+        const point = stroke[index]
+        const nextPoint = stroke[index + 1]
+        ctx.quadraticCurveTo(
+          point.x,
+          point.y,
+          (point.x + nextPoint.x) / 2,
+          (point.y + nextPoint.y) / 2
+        )
+      }
+      const finalPoint = stroke[stroke.length - 1]
+      ctx.lineTo(finalPoint.x, finalPoint.y)
+      ctx.stroke()
+    })
+    ctx.draw(false, () => {
+      rendering.current = false
+      if (renderQueued.current) scheduleRender(0)
+    })
   }
 
-  const scheduleFlush = () => {
-    if (flushTimer.current) return
-    flushTimer.current = setTimeout(flush, 16)
+  const scheduleRender = (delay = 16) => {
+    if (renderTimer.current) return
+    renderTimer.current = setTimeout(render, delay)
   }
 
   const start = (event: { changedTouches?: Array<{ x?: number; y?: number }> }) => {
     if (disabled) return
     const point = pointFromEvent(event)
     if (!point) return
-    flush()
     drawing.current = true
-    lastPoint.current = point
+    const stroke = [point]
+    strokes.current.push(stroke)
+    activeStroke.current = stroke
   }
 
   const move = (event: { changedTouches?: Array<{ x?: number; y?: number }> }) => {
     if (disabled || !drawing.current) return
     const point = pointFromEvent(event)
-    if (!point) return
-    pendingPoints.current.push(point)
-    scheduleFlush()
+    if (!point || !activeStroke.current) return
+    activeStroke.current.push(point)
+    scheduleRender()
     if (!signedReported.current) {
       signedReported.current = true
       onSignedChange(true)
@@ -85,19 +108,18 @@ export default function SignaturePad({ disabled, signed, onSignedChange }: Signa
 
   const end = () => {
     drawing.current = false
-    flush()
-    lastPoint.current = null
+    activeStroke.current = null
+    render()
   }
   const clear = () => {
     if (disabled) return
-    if (flushTimer.current) clearTimeout(flushTimer.current)
-    flushTimer.current = null
+    if (renderTimer.current) clearTimeout(renderTimer.current)
+    renderTimer.current = null
     drawing.current = false
-    lastPoint.current = null
-    pendingPoints.current = []
-    const ctx = getContext()
-    ctx.clearRect(0, 0, 1000, 500)
-    ctx.draw()
+    activeStroke.current = null
+    strokes.current = []
+    renderQueued.current = true
+    render()
     signedReported.current = false
     onSignedChange(false)
   }
