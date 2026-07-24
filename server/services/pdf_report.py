@@ -98,11 +98,19 @@ def _register_fonts() -> tuple[str, str]:
         r"C:\Windows\Fonts\msyhbd.ttc",
         r"C:\Windows\Fonts\simhei.ttf",
     ]
-    regular_path = next((item for item in regular_candidates if item and Path(item).is_file()), None)
-    bold_path = next((item for item in bold_candidates if item and Path(item).is_file()), regular_path)
-    if regular_path:
-        pdfmetrics.registerFont(TTFont(regular_name, regular_path))
-        pdfmetrics.registerFont(TTFont(bold_name, bold_path or regular_path))
+    regular_paths = [item for item in regular_candidates if item and Path(item).is_file()]
+    bold_path = next((item for item in bold_candidates if item and Path(item).is_file()), None)
+    for regular_path in regular_paths:
+        try:
+            regular_font = TTFont(regular_name, regular_path)
+        except Exception:
+            continue
+        try:
+            bold_font = TTFont(bold_name, bold_path or regular_path)
+        except Exception:
+            bold_font = TTFont(bold_name, regular_path)
+        pdfmetrics.registerFont(regular_font)
+        pdfmetrics.registerFont(bold_font)
         return regular_name, bold_name
 
     fallback_name = "STSong-Light"
