@@ -26,6 +26,17 @@ class LocalStorage:
             else _PROCESS_SIGNING_SECRET
         )
 
+    @staticmethod
+    def _io_path(path: Path) -> Path:
+        if os.name != "nt":
+            return path
+        absolute = str(path.resolve())
+        if absolute.startswith("\\\\?\\"):
+            return path
+        if absolute.startswith("\\\\"):
+            return Path(f"\\\\?\\UNC\\{absolute[2:]}")
+        return Path(f"\\\\?\\{absolute}")
+
     def resolve_key(self, key: str) -> Path:
         parsed = parse_object_key(key)
         target = (self.root / parsed.key).resolve()
@@ -35,33 +46,34 @@ class LocalStorage:
 
     def put(self, key: str, stream: BinaryIO, content_type: str) -> None:
         del content_type
-        target = self.resolve_key(key)
+        target = self._io_path(self.resolve_key(key))
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("wb") as output:
             shutil.copyfileobj(stream, output)
 
     def download_to(self, key: str, target: Path) -> None:
-        source = self.resolve_key(key)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        source = self._io_path(self.resolve_key(key))
+        io_target = self._io_path(target)
+        io_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, io_target)
 
     def delete(self, key: str) -> None:
-        self.resolve_key(key).unlink(missing_ok=True)
+        self._io_path(self.resolve_key(key)).unlink(missing_ok=True)
 
     def copy(self, source_key: str, target_key: str) -> None:
-        source = self.resolve_key(source_key)
-        target = self.resolve_key(target_key)
+        source = self._io_path(self.resolve_key(source_key))
+        target = self._io_path(self.resolve_key(target_key))
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
 
     def move(self, source_key: str, target_key: str) -> None:
-        source = self.resolve_key(source_key)
-        target = self.resolve_key(target_key)
+        source = self._io_path(self.resolve_key(source_key))
+        target = self._io_path(self.resolve_key(target_key))
         target.parent.mkdir(parents=True, exist_ok=True)
         source.replace(target)
 
     def exists(self, key: str) -> bool:
-        return self.resolve_key(key).is_file()
+        return self._io_path(self.resolve_key(key)).is_file()
 
     def _signature(self, key: str, expires: int) -> str:
         canonical_key = parse_object_key(key).key
@@ -82,7 +94,7 @@ class LocalStorage:
         expected = self._signature(canonical_key, expires)
         if not hmac.compare_digest(expected, signature):
             raise ValueError("invalid storage signature")
-        target = self.resolve_key(canonical_key)
+        target = self._io_path(self.resolve_key(canonical_key))
         if not target.is_file():
             raise FileNotFoundError(canonical_key)
         return target

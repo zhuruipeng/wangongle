@@ -208,6 +208,21 @@ def test_local_signing_fallback_survives_storage_cache_reset(
         get_storage.cache_clear()
 
 
+def test_local_storage_supports_deep_private_object_paths(tmp_path: Path) -> None:
+    storage = LocalStorage(tmp_path / "deep-private-storage", signing_secret="test-secret")
+    key = (
+        f"test/users/{'u' * 80}/orders/{'o' * 80}/photos/"
+        f"{'f' * 32}.jpg"
+    )
+    target = tmp_path / "downloaded.jpg"
+
+    storage.put(key, BytesIO(b"deep-private-data"), "image/jpeg")
+    storage.download_to(key, target)
+
+    assert storage.exists(key)
+    assert target.read_bytes() == b"deep-private-data"
+
+
 @pytest.mark.parametrize(
     "module_name",
     [

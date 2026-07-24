@@ -1,11 +1,12 @@
 import Taro from '@tarojs/taro'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { apiRequest, publicApiRequest, publicUploadFile, uploadFile } from './api'
+import { apiRequest, downloadFile, publicApiRequest, publicDownloadFile, publicUploadFile, uploadFile } from './api'
 import { clearSession, getAccessToken, refreshSession } from './session'
 
 vi.mock('@tarojs/taro', () => ({
   default: {
     request: vi.fn(),
+    downloadFile: vi.fn(),
     uploadFile: vi.fn(),
     reLaunch: vi.fn()
   }
@@ -106,6 +107,37 @@ describe('authenticated API transport', () => {
     expect(Taro.request).toHaveBeenCalledWith(expect.objectContaining({
       header: { 'content-type': 'application/json' }
     }))
+    expect(refreshSession).not.toHaveBeenCalled()
+  })
+
+  it('downloads an authenticated PDF and refreshes one 401', async () => {
+    vi.mocked(Taro.downloadFile)
+      .mockResolvedValueOnce({ statusCode: 401, tempFilePath: '' } as never)
+      .mockResolvedValueOnce({ statusCode: 200, tempFilePath: '/tmp/report.pdf' } as never)
+    vi.mocked(getAccessToken)
+      .mockReturnValueOnce('expired-access')
+      .mockReturnValueOnce('rotated-access')
+
+    await expect(downloadFile('/api/v1/service-orders/order-1/pdf')).resolves.toBe('/tmp/report.pdf')
+
+    expect(refreshSession).toHaveBeenCalledTimes(1)
+    expect(Taro.downloadFile).toHaveBeenCalledTimes(2)
+    expect(Taro.downloadFile).toHaveBeenLastCalledWith(expect.objectContaining({
+      header: { Authorization: 'Bearer rotated-access' },
+      timeout: 60000
+    }))
+  })
+
+  it('downloads a customer shared PDF without a Bearer header', async () => {
+    vi.mocked(Taro.downloadFile).mockResolvedValueOnce({
+      statusCode: 200,
+      tempFilePath: '/tmp/shared-report.pdf'
+    } as never)
+
+    await expect(publicDownloadFile('/api/v1/service-orders/customer-share/token/pdf'))
+      .resolves.toBe('/tmp/shared-report.pdf')
+
+    expect(Taro.downloadFile).toHaveBeenCalledWith(expect.objectContaining({ header: {} }))
     expect(refreshSession).not.toHaveBeenCalled()
   })
 

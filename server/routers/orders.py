@@ -6,10 +6,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, Optional
 from uuid import uuid4
+import logging
 import warnings
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 import jwt
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import and_, or_, select, update
@@ -53,6 +54,7 @@ from ..security import (
 )
 from ..services.ai_report_generator import generate_ai_service_report
 from ..services.report_generator import ReportGenerationError, generate_service_report
+from ..services.pdf_report import build_service_order_pdf
 from ..services.speech_to_text import SpeechToTextError, transcribe_audio
 from ..settings import get_ai_report_settings, get_asr_settings, get_storage_settings
 from ..storage import LocalStorage, StorageBackend, build_object_key, get_storage, parse_object_key
@@ -68,6 +70,7 @@ AUDIO_TYPES = {
 }
 
 router = APIRouter(tags=["service-orders"])
+logger = logging.getLogger(__name__)
 REPORT_CLAIM_LEASE = timedelta(minutes=5)
 AUDIO_RETENTION = timedelta(days=7)
 TRANSCRIPTION_CLAIM_LEASE = timedelta(minutes=5)
@@ -270,6 +273,12 @@ def ai_report_from_order(order: ServiceOrder) -> Optional[AiServiceReportDraft]:
         return None
 
 
+def ai_report_total(report: AiServiceReportDraft) -> int:
+    material_total = sum(item.amount_cents.value or 0 for item in report.materials)
+    labor_total = sum(item.amount_cents.value or 0 for item in report.labor)
+    return material_total + labor_total
+
+
 def photo_response(photo: ServiceOrderPhoto, storage: StorageBackend) -> PhotoResponse:
     if not photo.object_key:
         raise RuntimeError("photo is missing its private object key")
@@ -431,6 +440,40 @@ def get_service_order(
     db: Session = Depends(get_db),
 ):
     return order_response(get_order_or_404(db, current_user.id, order_id))
+
+
+def service_order_pdf_response(order: ServiceOrder) -> Response:
+    if not order.report_json:
+        raise HTTPException(status_code=409, detail="服务报告尚未生成")
+    try:
+        content = build_service_order_pdf(order, get_storage())
+    except Exception:
+        logger.exception("PDF generation failed order_id=%s", order.id)
+        raise HTTPException(status_code=503, detail="PDF生成失败，请稍后重试") from None
+    safe_order_no = "".join(
+        character if character.isascii() and (character.isalnum() or character in "-_") else "-"
+        for character in order.order_no
+    ).strip("-") or "report"
+    filename = f"service-order-{safe_order_no}.pdf"
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/{order_id}/pdf", response_class=Response)
+def download_service_order_pdf(
+    order_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return service_order_pdf_response(
+        get_order_or_404(db, current_user.id, order_id)
+    )
 
 
 @router.patch("/{order_id}", response_model=ServiceOrderResponse)
@@ -953,6 +996,7 @@ def generate_order_ai_report(
             )
             .values(
                 report_json=result.report.model_dump_json(),
+                total_amount_cents=ai_report_total(result.report),
                 report_generation_status="succeeded",
                 report_generation_error=None,
                 report_model=settings.model,
@@ -986,6 +1030,7 @@ def save_ai_report(
 ):
     order = get_order_or_404(db, current_user.id, order_id)
     order.report_json = payload.model_dump_json()
+    order.total_amount_cents = ai_report_total(payload)
     order.report_generation_status = "succeeded"
     order.report_generation_error = None
     order.report_generated_at = datetime.now(timezone.utc)
@@ -1165,6 +1210,19 @@ def get_customer_shared_order(
 
 
 @router.get(
+    "/customer-share/{share_token}/pdf",
+    response_class=Response,
+)
+def download_customer_shared_order_pdf(
+    share_token: str,
+    db: Session = Depends(get_db),
+):
+    return service_order_pdf_response(
+        get_shared_order_or_404(db, share_token)
+    )
+
+
+@router.get(
     "/customer-share/{share_token}/photos/{photo_id}",
     include_in_schema=False,
 )
@@ -1233,6 +1291,7 @@ def persist_acceptance(
     try:
         storage.put(object_key, upload.stream, upload.content_type)
     except Exception:
+        logger.exception("signature storage failed order_id=%s", order.id)
         delete_or_enqueue(db, storage, object_key, "acceptance_upload_rollback")
         raise HTTPException(status_code=503, detail="签名保存失败，请稍后重试") from None
 

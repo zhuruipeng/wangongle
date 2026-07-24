@@ -6,6 +6,8 @@ import {
   acceptCustomerSharedOrder,
   acceptServiceOrder,
   createCustomerShare,
+  downloadCustomerSharedOrderPdf,
+  downloadOrderPdf,
   getCustomerSharedOrder,
   getServiceOrder
 } from '../../services/serviceOrders'
@@ -20,6 +22,7 @@ const taroHooks = vi.hoisted(() => ({
 vi.mock('@tarojs/taro', () => ({
   default: {
     canvasToTempFilePath: vi.fn(),
+    openDocument: vi.fn(),
     getCurrentInstance: vi.fn(() => ({ router: { params: taroHooks.params } })),
     reLaunch: vi.fn(),
     showModal: vi.fn(),
@@ -46,6 +49,8 @@ vi.mock('../../services/serviceOrders', () => ({
   acceptCustomerSharedOrder: vi.fn(),
   acceptServiceOrder: vi.fn(),
   createCustomerShare: vi.fn(),
+  downloadCustomerSharedOrderPdf: vi.fn(),
+  downloadOrderPdf: vi.fn(),
   getCustomerSharedOrder: vi.fn(),
   getServiceOrder: vi.fn()
 }))
@@ -107,6 +112,8 @@ describe('CustomerAcceptance', () => {
     vi.mocked(getServiceOrder).mockResolvedValue(order as never)
     vi.mocked(getCustomerSharedOrder).mockResolvedValue(order as never)
     vi.mocked(createCustomerShare).mockResolvedValue({ share_token: 'share-token', expires_in: 2592000 })
+    vi.mocked(downloadOrderPdf).mockResolvedValue('/tmp/order-report.pdf')
+    vi.mocked(downloadCustomerSharedOrderPdf).mockResolvedValue('/tmp/shared-report.pdf')
     vi.mocked(Taro.canvasToTempFilePath).mockResolvedValue({ tempFilePath: '/tmp/signature.png', errMsg: 'ok' })
     vi.mocked(acceptServiceOrder).mockResolvedValue({
       status: 'accepted',
@@ -179,6 +186,52 @@ describe('CustomerAcceptance', () => {
     expect(createCustomerShare).not.toHaveBeenCalled()
     expect(acceptCustomerSharedOrder).toHaveBeenCalledWith('customer-token', '/tmp/signature.png')
     expect(acceptServiceOrder).not.toHaveBeenCalled()
+  })
+
+  it('opens the latest PDF with the WeChat document menu', async () => {
+    currentOrder = order
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<CustomerAcceptance />) })
+    await act(async () => {
+      taroHooks.load?.()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const pdfButton = renderer.root.findAllByType('button').find(button =>
+      String(button.props.children).includes('查看并保存 PDF')
+    )
+    await act(async () => pdfButton?.props.onClick())
+
+    expect(downloadOrderPdf).toHaveBeenCalledWith('order-1')
+    expect(Taro.openDocument).toHaveBeenCalledWith({
+      filePath: '/tmp/order-report.pdf',
+      fileType: 'pdf',
+      showMenu: true
+    })
+  })
+
+  it('uses the public PDF endpoint in customer share mode', async () => {
+    taroHooks.params = { shareToken: 'customer-token' }
+    let renderer!: ReturnType<typeof create>
+    await act(async () => { renderer = create(<CustomerAcceptance />) })
+    await act(async () => {
+      taroHooks.load?.()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const pdfButton = renderer.root.findAllByType('button').find(button =>
+      String(button.props.children).includes('查看并保存 PDF')
+    )
+    await act(async () => pdfButton?.props.onClick())
+
+    expect(downloadCustomerSharedOrderPdf).toHaveBeenCalledWith('customer-token')
+    expect(downloadOrderPdf).not.toHaveBeenCalled()
+    expect(Taro.openDocument).toHaveBeenCalledWith(expect.objectContaining({
+      filePath: '/tmp/shared-report.pdf',
+      showMenu: true
+    }))
   })
 
   it('returns to the workbench from an accepted order', async () => {

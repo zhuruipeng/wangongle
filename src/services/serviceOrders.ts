@@ -1,4 +1,4 @@
-import { apiRequest, publicApiRequest, publicUploadFile, uploadFile } from './api'
+import { apiRequest, downloadFile, publicApiRequest, publicDownloadFile, publicUploadFile, uploadFile } from './api'
 
 export type OrderStatus = 'draft' | 'in_progress' | 'waiting_acceptance' | 'accepted' | 'cancelled'
 export type ApiPhoto = { id: string; phase: 'before' | 'after'; file_url: string; original_filename: string; sort_order: number; created_at: string }
@@ -88,6 +88,10 @@ export const createCustomerShare = (id: string) =>
   apiRequest<ApiCustomerShare>(`/api/v1/service-orders/${id}/customer-share`, { method: 'POST' })
 export const getCustomerSharedOrder = (shareToken: string) =>
   publicApiRequest<ApiCustomerSharedOrder>(`/api/v1/service-orders/customer-share/${encodeURIComponent(shareToken)}`)
+export const downloadOrderPdf = (id: string) =>
+  downloadFile(`/api/v1/service-orders/${id}/pdf`)
+export const downloadCustomerSharedOrderPdf = (shareToken: string) =>
+  publicDownloadFile(`/api/v1/service-orders/customer-share/${encodeURIComponent(shareToken)}/pdf`)
 export const acceptCustomerSharedOrder = (shareToken: string, signaturePath: string) =>
   publicUploadFile<ApiAcceptance>(
     `/api/v1/service-orders/customer-share/${encodeURIComponent(shareToken)}/acceptance`,

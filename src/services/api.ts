@@ -66,6 +66,48 @@ export async function publicApiRequest<T>(path: string, options: RequestOptions 
   return response.data
 }
 
+export async function downloadFile(path: string): Promise<string> {
+  return authenticatedDownload(path, false)
+}
+
+export async function publicDownloadFile(path: string): Promise<string> {
+  let response: Taro.downloadFile.SuccessCallbackResult
+  try {
+    response = await Taro.downloadFile({
+      url: `${API_BASE_URL}${path}`,
+      header: {},
+      timeout: 60000
+    })
+  } catch (error) {
+    throw connectionError(error, 'PDF下载失败，请检查网络后重试')
+  }
+  if (response.statusCode < 200 || response.statusCode >= 300 || !response.tempFilePath) {
+    throw new Error(`PDF下载失败（${response.statusCode}）`)
+  }
+  return response.tempFilePath
+}
+
+async function authenticatedDownload(path: string, retried: boolean): Promise<string> {
+  let response: Taro.downloadFile.SuccessCallbackResult
+  try {
+    response = await Taro.downloadFile({
+      url: `${API_BASE_URL}${path}`,
+      header: authHeader(),
+      timeout: 60000
+    })
+  } catch (error) {
+    throw connectionError(error, 'PDF下载失败，请检查网络后重试')
+  }
+  if (response.statusCode === 401 && !NON_REFRESHABLE_AUTH_PATHS.has(path.split('?')[0])) {
+    await recoverUnauthorized(retried)
+    if (!retried) return authenticatedDownload(path, true)
+  }
+  if (response.statusCode < 200 || response.statusCode >= 300 || !response.tempFilePath) {
+    throw new Error(`PDF下载失败（${response.statusCode}）`)
+  }
+  return response.tempFilePath
+}
+
 async function authenticatedRequest<T>(path: string, options: RequestOptions, retried: boolean): Promise<T> {
   let response: { statusCode: number; data: T }
   try {

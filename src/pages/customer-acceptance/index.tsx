@@ -8,6 +8,8 @@ import {
   acceptCustomerSharedOrder,
   acceptServiceOrder,
   createCustomerShare,
+  downloadCustomerSharedOrderPdf,
+  downloadOrderPdf,
   getCustomerSharedOrder,
   getServiceOrder,
   type ApiCustomerSharedOrder,
@@ -88,6 +90,7 @@ export default function CustomerAcceptance() {
   const [shareToken, setShareToken] = useState('')
   const [shareLoading, setShareLoading] = useState(false)
   const [shareError, setShareError] = useState('')
+  const [pdfOpening, setPdfOpening] = useState(false)
 
   const prepareShare = async (id: string) => {
     setShareLoading(true)
@@ -179,6 +182,27 @@ export default function CustomerAcceptance() {
       setSubmitting(false)
     }
   }
+  const openPdf = async () => {
+    if (pdfOpening) return
+    if (!orderId || !remote || loadError) {
+      return Taro.showToast({ title: '服务单尚未加载完成', icon: 'none' })
+    }
+    setPdfOpening(true)
+    try {
+      const filePath = sharedMode
+        ? await downloadCustomerSharedOrderPdf(shareToken)
+        : await downloadOrderPdf(orderId)
+      await Taro.openDocument({ filePath, fileType: 'pdf', showMenu: true })
+    } catch (error) {
+      Taro.showToast({
+        title: error instanceof Error ? error.message : 'PDF打开失败，请重试',
+        icon: 'none',
+        duration: 3000
+      })
+    } finally {
+      setPdfOpening(false)
+    }
+  }
   const handlePrimaryAction = () => {
     if (finished) {
       if (sharedMode) return
@@ -203,6 +227,13 @@ export default function CustomerAcceptance() {
       </View>
       <Button className='share-btn' openType='share' loading={shareLoading} disabled={!shareToken || shareLoading}>转发到微信</Button>
     </View>}
+
+    <Button
+      className='pdf-btn'
+      loading={pdfOpening}
+      disabled={pdfOpening || loading || !remote}
+      onClick={openPdf}
+    >{pdfOpening ? '正在生成 PDF' : '查看并保存 PDF'}</Button>
 
     <Section title='客户和服务信息'>
       {loading && <Text className='load-note'>正在读取服务单...</Text>}{loadError && <Text className='load-error'>{loadError}</Text>}
