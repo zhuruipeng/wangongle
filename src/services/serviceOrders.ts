@@ -46,7 +46,8 @@ export type ApiAcceptance = {
 }
 export type ApiServiceOrder = {
   id: string; order_no: string; company_name: string; customer_name: string; customer_phone: string
-  service_address: string; service_type: string; technician_name: string; status: OrderStatus
+  service_address: string; service_location_name: string | null; service_latitude: number | null; service_longitude: number | null
+  service_type: string; technician_name: string; status: OrderStatus
   transcript: string | null; report: ApiReport | null; generated_report: ApiGeneratedReport | null; total_amount_cents: number; paid_amount_cents: number
   ai_report: ApiAiServiceReportDraft | null
   audio_url: string | null; before_photos: ApiPhoto[]; after_photos: ApiPhoto[]; created_at: string; updated_at: string
@@ -57,7 +58,8 @@ export type ApiServiceOrder = {
 }
 export type ApiCustomerSharedOrder = {
   id: string; order_no: string; company_name: string; customer_name: string
-  service_address: string; service_type: string; technician_name: string
+  service_address: string; service_location_name: string | null; service_latitude: number | null; service_longitude: number | null
+  service_type: string; technician_name: string
   status: 'waiting_acceptance' | 'accepted'
   report: ApiReport | null; ai_report: ApiAiServiceReportDraft | null
   total_amount_cents: number; paid_amount_cents: number
@@ -66,7 +68,8 @@ export type ApiCustomerSharedOrder = {
 export type ApiCustomerShare = { share_token: string; expires_in: number }
 export type CreateOrderPayload = {
   order_no: string; company_name: string; customer_name: string; customer_phone: string
-  service_address: string; service_type: string; status: OrderStatus
+  service_address: string; service_location_name?: string; service_latitude?: number; service_longitude?: number
+  service_type: string; status: OrderStatus
 }
 
 export const createServiceOrder = (payload: CreateOrderPayload) => apiRequest<ApiServiceOrder>('/api/v1/service-orders', { method: 'POST', data: payload })

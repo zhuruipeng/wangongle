@@ -13,8 +13,17 @@ class ServiceOrderCreate(BaseModel):
     customer_name: str = Field(min_length=1, max_length=100)
     customer_phone: str = Field(min_length=1, max_length=50)
     service_address: str = Field(min_length=1, max_length=500)
+    service_location_name: Optional[str] = Field(default=None, max_length=300)
+    service_latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    service_longitude: Optional[float] = Field(default=None, ge=-180, le=180)
     service_type: str = Field(min_length=1, max_length=300)
     status: MutableOrderStatus = "draft"
+
+    @model_validator(mode="after")
+    def location_coordinates_must_be_complete(self):
+        if (self.service_latitude is None) != (self.service_longitude is None):
+            raise ValueError("latitude and longitude must be provided together")
+        return self
 
 
 class ServiceOrderPatch(BaseModel):
@@ -22,9 +31,25 @@ class ServiceOrderPatch(BaseModel):
     customer_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     customer_phone: Optional[str] = Field(default=None, min_length=1, max_length=50)
     service_address: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    service_location_name: Optional[str] = Field(default=None, max_length=300)
+    service_latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    service_longitude: Optional[float] = Field(default=None, ge=-180, le=180)
     service_type: Optional[str] = Field(default=None, min_length=1, max_length=300)
     status: Optional[MutableOrderStatus] = None
     transcript: Optional[str] = Field(default=None, max_length=10000)
+
+    @model_validator(mode="after")
+    def location_coordinates_must_be_complete(self):
+        coordinate_fields = {"service_latitude", "service_longitude"}
+        provided_fields = coordinate_fields.intersection(self.model_fields_set)
+        if provided_fields and provided_fields != coordinate_fields:
+            raise ValueError("latitude and longitude must be provided together")
+        if (
+            provided_fields == coordinate_fields
+            and (self.service_latitude is None) != (self.service_longitude is None)
+        ):
+            raise ValueError("latitude and longitude must be provided together")
+        return self
 
 
 class MaterialItem(BaseModel):
@@ -210,6 +235,9 @@ class ServiceOrderResponse(BaseModel):
     customer_name: str
     customer_phone: str
     service_address: str
+    service_location_name: Optional[str]
+    service_latitude: Optional[float]
+    service_longitude: Optional[float]
     service_type: str
     technician_name: str
     status: OrderStatus
@@ -245,6 +273,9 @@ class CustomerSharedOrderResponse(BaseModel):
     company_name: str
     customer_name: str
     service_address: str
+    service_location_name: Optional[str]
+    service_latitude: Optional[float]
+    service_longitude: Optional[float]
     service_type: str
     technician_name: str
     status: Literal["waiting_acceptance", "accepted"]

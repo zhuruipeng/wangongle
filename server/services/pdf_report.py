@@ -147,6 +147,15 @@ def _mask_phone(phone: str) -> str:
     return value
 
 
+def _service_address(order: ServiceOrder) -> str:
+    lines = [order.service_address]
+    if order.service_location_name and order.service_location_name not in order.service_address:
+        lines.append(f"地点：{order.service_location_name}")
+    if order.service_latitude is not None and order.service_longitude is not None:
+        lines.append(f"定位：{order.service_latitude:.6f}, {order.service_longitude:.6f}")
+    return "\n".join(lines)
+
+
 def _report_data(order: ServiceOrder) -> ReportData:
     if not order.report_json:
         raise ValueError("service report is missing")
@@ -481,7 +490,7 @@ def build_service_order_pdf(order: ServiceOrder, storage: StorageBackend) -> byt
             ],
             [
                 _paragraph("服务地址", styles["label"]),
-                _paragraph(order.service_address, styles["body"]),
+                _paragraph(_service_address(order), styles["body"]),
                 _paragraph("创建时间", styles["label"]),
                 _paragraph(_date_time(order.created_at), styles["body"]),
             ],

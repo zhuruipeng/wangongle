@@ -75,6 +75,9 @@ def test_alembic_upgrades_empty_database(tmp_path, monkeypatch) -> None:
     }
     assert order_columns["audio_delete_after"]["nullable"] is True
     assert order_columns["transcription_claim_token"]["nullable"] is True
+    assert order_columns["service_location_name"]["nullable"] is True
+    assert order_columns["service_latitude"]["nullable"] is True
+    assert order_columns["service_longitude"]["nullable"] is True
     current_output = StringIO()
     command.current(Config("alembic.ini", stdout=current_output))
-    assert "0004 (head)" in current_output.getvalue()
+    assert "0005 (head)" in current_output.getvalue()

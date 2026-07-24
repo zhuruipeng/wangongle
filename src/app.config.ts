@@ -15,5 +15,11 @@ export default defineAppConfig({
     navigationBarTitleText: '干完了',
     navigationBarTextStyle: 'white',
     backgroundColor: '#f5f7fa'
-  }
+  },
+  permission: {
+    'scope.userLocation': {
+      desc: '用于在地图中选择并记录上门服务地址'
+    }
+  },
+  requiredPrivateInfos: ['chooseLocation']
 })

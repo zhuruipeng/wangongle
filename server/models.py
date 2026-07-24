@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -48,6 +48,9 @@ class ServiceOrder(Base):
     customer_name: Mapped[str] = mapped_column(String(100))
     customer_phone: Mapped[str] = mapped_column(String(50))
     service_address: Mapped[str] = mapped_column(String(500))
+    service_location_name: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    service_latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    service_longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     service_type: Mapped[str] = mapped_column(String(300))
     technician_name: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(32), index=True, default="draft")
