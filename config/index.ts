@@ -1,6 +1,9 @@
 import { defineConfig, type UserConfigExport } from '@tarojs/cli'
 
 export default defineConfig<'webpack5'>(async (merge) => {
+  const defaultApiBaseUrl = process.env.NODE_ENV === 'development'
+    ? 'http://127.0.0.1:8001'
+    : 'https://www.weiyuantool.com/ganwanle-api'
   const base: UserConfigExport<'webpack5'> = {
     projectName: 'ganwanle-miniapp',
     date: '2026-07-18',
@@ -12,7 +15,7 @@ export default defineConfig<'webpack5'>(async (merge) => {
     framework: 'react',
     compiler: 'webpack5',
     defineConstants: {
-      __GANWANLE_API_BASE_URL__: JSON.stringify(process.env.TARO_APP_API_BASE_URL || 'http://127.0.0.1:8001'),
+      __GANWANLE_API_BASE_URL__: JSON.stringify(process.env.TARO_APP_API_BASE_URL || defaultApiBaseUrl),
       __GANWANLE_DEV__: JSON.stringify(process.env.NODE_ENV !== 'production')
     },
     cache: { enable: false },

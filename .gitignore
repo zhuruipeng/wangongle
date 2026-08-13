@@ -1,4 +1,5 @@
 node_modules/
+.worktrees/
 .swc/
 dist/
 dist-h5/
